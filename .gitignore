@@ -1,0 +1,19 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Local Data Lakehouse (Keep data out of git)
+data/
+outputs/case_studies/*.png
+
+# Environment Variables & Keys
+.env
+*.json
+!outputs/metrics_summary.json
+!gcp_key.example.json
+
+# OS files
+.DS_Store

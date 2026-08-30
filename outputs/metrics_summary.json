@@ -1,0 +1,17 @@
+{
+  "sample_games_count": 80,
+  "total_pitches_analyzed": 7194,
+  "total_collapse_events": 139,
+  "lift_odds_ratio": 8.31,
+  "p_collapse_given_alert": 0.237,
+  "p_collapse_given_no_alert": 0.029,
+  "pr_auc": 0.357,
+  "precision": 0.237,
+  "recall": 0.626,
+  "f1_score": 0.344,
+  "lead_time_mean_pitches": 31.2,
+  "lead_time_median_pitches": 24.0,
+  "lead_time_25pct_pitches": 12.8,
+  "lead_time_75pct_pitches": 48.0,
+  "false_alarm_rate_per_start": 0.672
+}

@@ -1,0 +1,61 @@
+# Baseball Fatigue & Collapse Prediction Configuration
+
+# Data Qualify Filter Settings (§3)
+qualify:
+  min_pitches_per_game: 50
+  min_starts_per_season: 10          # Min qualified starts in historical period
+  max_missing_mechanics_pct: 0.05    # Max 5% missing in release_pos or spin_axis
+  exclude_openers: true
+  exclude_position_pitchers: true
+  exclude_rain_delays_min: 30
+  top_n_pitch_types: 3              # Analyze top 3 pitch types per pitcher
+
+# Baseline Calculation Settings (§5 Step 2 & 3)
+baseline:
+  historical_window_starts: 12      # Prior N qualified starts used for baseline
+  min_pitches_for_baseline: 40      # Minimum pitches per pitch type across window
+  intra_game_calibration_pitches: 20 # First N pitches of the game for shrinkage
+  shrinkage_lambda: 0.35            # Weight on in-game mean vs historical baseline
+
+# Features & Mechanics (§4)
+features:
+  mechanics_cols:
+    - "release_pos_x"
+    - "release_pos_z"
+    - "release_extension"
+    - "release_speed"
+    - "release_spin_rate"
+    - "spin_axis"
+    - "pfx_x"
+    - "pfx_z"
+    - "vaa"                         # Computed Vertical Approach Angle
+  rolling_windows: [5, 10]
+
+# Anomaly Scoring & Changepoint Detection (§5 Step 4 & 5)
+anomaly:
+  method: "mahalanobis"             # mahalanobis | autoencoder | ensemble
+  ridge_regularization: 1e-4        # Regularization for covariance matrix inversion
+  health_index_decay_alpha: 0.45    # Health Index = 100 * exp(-alpha * anomaly_score)
+
+changepoint:
+  detector: "cusum"                 # cusum | ewma | hybrid
+  cusum_slack_k: 0.5                # Slack value (in std deviations)
+  cusum_threshold_h: 4.5            # Decision threshold (in std deviations)
+  ewma_lambda: 0.20                 # EWMA smoothing factor
+  ewma_threshold_sigma: 2.8         # EWMA control limit in std devs
+  consecutive_anomaly_pitches: 3    # Alternative simple rule: N consecutive pitches > 2.0 sigma
+
+# Label Definition for Collapse (§5 Step 6 - Strictly isolated from features)
+labels:
+  window_pa_size: 3                 # Rolling 3 Plate Appearances window
+  blended_xwoba_percentile: 0.90    # Or absolute threshold >= 0.450
+  blended_xwoba_threshold: 0.450
+  min_barrels_in_window: 2
+  min_bb_hbp_in_window: 2
+
+# Evaluation & Baseline Comparisons (§5 Step 7)
+evaluation:
+  naive_velocity_drop_mph: 1.5      # Naive alert when rolling velocity drops >= 1.5 mph
+  naive_pitch_count_threshold: 85   # Naive alert when pitch count >= 85
+  prediction_horizon_pitches: 15    # Evaluate collapse occurrence within next 15 pitches of alert
+  prediction_horizon_pas: 3         # Evaluate collapse occurrence within next 3 PAs of alert
