@@ -1,10 +1,10 @@
 # GCP Lakehouse & Deployment Configuration
 
 gcp:
-  project_id: "your-gcp-project-id"          # Set via env GCP_PROJECT_ID
+  project_id: "project-f677f84f-db22-4976-96b"
   region: "us-central1"
-  gcs_bucket: "baseball-fatigue-lakehouse"    # Set via env GCS_BUCKET_NAME
-  bigquery_dataset: "baseball_analytics"     # Set via env BIGQUERY_DATASET
+  gcs_bucket: "baseball-lakehouse-f677f84f"
+  bigquery_dataset: "baseball_analytics"
 
 storage:
   backend: "duckdb"                          # "duckdb" for local, "bigquery" for GCP
