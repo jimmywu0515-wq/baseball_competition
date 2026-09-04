@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+import re
 
 # Path setup
 project_root = Path(__file__).resolve().parent.parent
@@ -44,18 +45,46 @@ PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "project-f677f84f-db22-4976-96b")
 DATASET_ID = os.environ.get("BIGQUERY_DATASET", "baseball_analytics")
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", f"{PROJECT_ID}-baseball-lakehouse")
 
+def clean_df_for_bigquery(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepares dataframe for BigQuery: ensures proper DATE types and clean column names."""
+    df_clean = df.copy()
+    
+    # 1. Standardize column names (no spaces, slashes or special chars)
+    new_cols = []
+    for c in df_clean.columns:
+        c_clean = re.sub(r'[^a-zA-Z0-9_]', '_', str(c)).lower()
+        c_clean = re.sub(r'_+', '_', c_clean).strip('_')
+        new_cols.append(c_clean)
+    df_clean.columns = new_cols
+
+    # 2. Ensure date columns are real datetime.date objects for BigQuery DAY partitioning
+    date_cols = [c for c in df_clean.columns if "date" in c]
+    for dc in date_cols:
+        try:
+            df_clean[dc] = pd.to_datetime(df_clean[dc]).dt.date
+        except Exception:
+            pass
+
+    return df_clean
+
 def write_to_bigquery_if_possible(df: pd.DataFrame, table_name: str):
-    """Writes dataframe to BigQuery if credentials/client are available."""
+    """Writes dataframe to BigQuery with type casting and schema alignment."""
     try:
         from google.cloud import bigquery
         client = bigquery.Client(project=PROJECT_ID)
         dest_table = f"{PROJECT_ID}.{DATASET_ID}.{table_name}"
-        job_config = bigquery.LoadJobConfig(write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE)
-        job = client.load_table_from_dataframe(df, dest_table, job_config=job_config)
-        job.result()
-        logger.info(f"[BigQuery Warehouse] Loaded {len(df)} rows into `{dest_table}`")
+        
+        df_bq = clean_df_for_bigquery(df)
+
+        job_config = bigquery.LoadJobConfig(
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            autodetect=True
+        )
+        job = client.load_table_from_dataframe(df_bq, dest_table, job_config=job_config)
+        job.result() # Wait for job completion
+        logger.info(f"[BigQuery Warehouse] Loaded {len(df_bq)} rows into `{dest_table}` successfully!")
     except Exception as e:
-        logger.warning(f"[BigQuery] Could not load to BigQuery table {table_name}: {e}")
+        logger.error(f"[BigQuery] Error loading table {table_name}: {e}")
 
 def run_cloud_elt():
     logger.info("=" * 70)
@@ -90,8 +119,6 @@ def run_cloud_elt():
     qualifier = QualifyFilter(min_pitches_per_game=50, min_starts_per_season=10, max_missing_mechanics_pct=0.05)
     qualified_df, dim_pitchers, dim_games = qualifier.filter_qualified_games(raw_df)
     
-    # Save clean Silver layers
-    gcs.upload_parquet_to_lake(qualified_df, "silver/stg_qualified_pitches.parquet")
     sm.save_table(qualified_df, "stg_qualified_pitches", layer="silver")
     sm.save_table(dim_pitchers, "dim_pitchers", layer="silver")
     sm.save_table(dim_games, "dim_games", layer="silver")
