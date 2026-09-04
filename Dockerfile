@@ -1,21 +1,24 @@
+# Production Dockerfile for Baseball Fatigue ELT Lakehouse Pipeline
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build dependencies
+# Install minimal OS build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy and install python dependencies inside container
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
+# Copy source code and scripts
 COPY . .
 
-# Run full pipeline to populate data lakehouse if not present
-RUN python scripts/run_full_pipeline.py
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-EXPOSE 8080
-
-CMD ["streamlit", "run", "dashboard/app.py", "--server.port=8080", "--server.address=0.0.0.0"]
+# Default action: run the complete cloud ELT pipeline
+ENTRYPOINT ["python", "scripts/run_cloud_elt.py"]
