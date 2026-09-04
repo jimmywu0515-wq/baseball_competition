@@ -20,7 +20,7 @@ class StorageManager:
     def __init__(self, base_dir: Optional[str] = None, db_path: Optional[str] = None):
         if base_dir is None:
             # default to baseball_competition directory
-            self.base_dir = Path("/Users/jimmywu/Desktop/baseball_competition")
+            self.base_dir = Path(__file__).resolve().parent.parent.parent
         else:
             self.base_dir = Path(base_dir)
 

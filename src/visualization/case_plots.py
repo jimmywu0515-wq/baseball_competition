@@ -24,7 +24,7 @@ class CaseStudyVisualizer:
     """
     def __init__(self, output_dir: Optional[str] = None):
         if output_dir is None:
-            self.output_dir = Path("/Users/jimmywu/Desktop/baseball_competition/outputs/case_studies")
+            self.output_dir = Path(__file__).resolve().parent.parent.parent / "outputs" / "case_studies"
         else:
             self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)

@@ -24,7 +24,7 @@ class StatcastLoader:
     """
     def __init__(self, cache_dir: Optional[str] = None):
         if cache_dir is None:
-            self.cache_dir = Path("/Users/jimmywu/Desktop/baseball_competition/data/raw")
+            self.cache_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw"
         else:
             self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)

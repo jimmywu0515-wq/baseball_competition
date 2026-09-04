@@ -51,7 +51,7 @@ class GCSLakeManager:
                 logger.error(f"[GCS Lake] Upload failed for {gcs_path}: {e}")
         
         # Local fallback
-        local_path = Path("/Users/jimmywu/Desktop/baseball_competition/data") / gcs_path
+        local_path = Path(__file__).resolve().parent.parent.parent / "data" / gcs_path
         local_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(local_path, index=False, engine="pyarrow")
         logger.info(f"[Local Fallback] Saved to {local_path}")
