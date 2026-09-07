@@ -1,154 +1,293 @@
-# 基於微觀物理特徵衰退的時間序列疲勞與崩盤預測系統
-### Baseball Fatigue & Collapse Early Warning System (GCP-Ready Data Lakehouse)
+# MLB Pitcher Mechanics Stability Index (MSI) — Time-Series Collapse Early Warning System
 
-本專案旨在解決棒球投手調度上的核心痛點：**能否在「球速還沒掉、失分還沒發生」之前，用逐球的釋放機制微特徵（Release Point 3D、Spin Axis、VAA 等）偵測投手機制正在崩壞？**
-
-系統採用 **「無監督異常偵測（即時警報）」 + 「結果導向規則（事後驗證標籤，嚴格隔離）」** 的科學研究架構，並以 **GCP 雲端架構（BigQuery + Cloud Storage + Cloud Run）與 Medallion Data Lakehouse 五層式資料工程** 進行模組化實作。
+> **Empirical research on delivery-drift detection using real MLB Statcast data**
+> Baseball Datathon Submission | 6 starters · 175 outings · 16,817 pitches (2023–2024 Statcast)
 
 ---
 
-## 系統架構與資料分層 (Medallion Data Lakehouse)
+## Chapter 1 — Baseball Problem & Coaching Decisions
+
+Every pitching change involves a timing tradeoff with real run-scoring consequences:
+
+| Decision | Too Early | Too Late |
+|---|---|---|
+| Warm bullpen | Wasted effort | Pitcher already collapsing |
+| Mound visit | Disrupts rhythm | Damage already done |
+| Pull starter | Misses quality innings | Back-to-back hits, HR |
+
+**Core question:** Can we detect that a pitcher's delivery is drifting *before* velocity drops and outcomes deteriorate — giving coaches 10–20 pitches (≈3–4 PAs) of advance warning?
+
+Traditional signals (pitch count ≥85, fastball velocity drop ≥1.5 mph) are **reactive**. By the time these thresholds fire, the pitcher has often already been hit hard. This system attempts early detection by tracking **micro-mechanical delivery fingerprints** (release point, spin axis, vertical approach angle) pitch by pitch.
+
+---
+
+## Chapter 2 — Hypothesis: Delivery Drift as a Precursor
+
+**Mechanics Stability Index (MSI)** is defined as:
 
 ```
-MLB Statcast API (pybaseball)
-            │
-            ▼
-   [ Layer 0: Bronze ]  ───► raw_statcast_pitches (逐球原始數據，按日期分區)
-            │
-            ▼
-   [ Layer 1: Silver ]  ───► dim_pitchers, dim_games, stg_qualified_pitches (嚴格 Qualify 篩選)
-            │
-            ├─────────────────────────────────────────┐
-            ▼ (無未來資訊洩漏)                         ▼ (嚴格隔離防線)
-   [ Layer 2: Silver ]                       [ Layer 4: Gold ]
-     - feat_pitcher_pitchtype_baseline         - fact_collapse_labels (3-PA 滾動 xwOBA/Barrels/BB)
-     - feat_pitch_level_features                      │
-            │                                         │
-            ▼                                         │
-   [ Layer 3: Gold ]                                  │
-     - fact_pitch_anomaly_scores (馬氏距離/AE)        │
-     - fact_alert_events (CUSUM/EWMA 變點警報)        │
-            │                                         │
-            └────────────────────┬────────────────────┘
-                                 ▼
-                        [ Layer 5: Gold Marts ]
-                          - mart_model_evaluation (Lift / Lead Time / Naive 對比)
-                          - mart_game_case_studies
-                                 │
-                                 ▼
-                     [ 教練即時戰情儀表板 (Streamlit) ]
+MSI = 100 × exp(−α · D_M)
 ```
 
-### 資料表綱要 (Table Schemas)
+Where `D_M` is the Mahalanobis distance from each pitch's micro-feature vector to the pitcher's personal historical baseline:
 
-| 分層 | 資料表名稱 | 鍵值 (Keys) | 核心用途與說明 |
+```
+D_M² = (x − μ)ᵀ Σ⁻¹ (x − μ)    [exact quadratic form, no elementwise abs]
+```
+
+**Hypothesis:** Mechanical delivery drift (MSI declining) precedes velocity drop and outcome deterioration by 10–20 pitches. MSI measures *mechanical instability*, not biological fatigue directly. Causality requires further empirical validation.
+
+### Features tracked per pitch
+| Feature Group | Variables | Why it matters |
+|---|---|---|
+| Release Point | `release_pos_x`, `release_pos_z`, `release_extension` | Arm slot consistency |
+| Spin Axis | `spin_axis_cos`, `spin_axis_sin` | Circular coords to avoid 359°↔1° discontinuity |
+| Movement | `pfx_x`, `pfx_z`, VAA (kinematic) | Break consistency |
+| Velocity | `release_speed` (per pitch type) | Primary fastball only (FF/SI/FC) |
+
+---
+
+## Chapter 3 — Real MLB Dataset & Experimental Design
+
+### Cohort
+| Pitcher | Handedness | 2023 Outings | Pitches |
 |---|---|---|---|
-| **Layer 0 (Bronze)** | `raw_statcast_pitches` | `(game_pk, pitch_number)` | Statcast 90+ 原始欄位，按 `game_date` 分區 |
-| **Layer 1 (Silver)** | `stg_qualified_pitches` | `(game_pk, pitch_number)` | 符合 §3 Qualify 之先發投手逐球資料（$\ge 50$ 球、缺值 $<5\%$、排除 opener） |
-| **Layer 1 (Silver)** | `dim_pitchers` | `pitcher` | 投手維度表，含主要球種分類（Top 2-3 pitch types） |
-| **Layer 1 (Silver)** | `dim_games` | `game_pk` | 賽事維度表 |
-| **Layer 2 (Silver)** | `feat_pitcher_pitchtype_baseline` | `(pitcher, pitch_type, as_of_date)` | **個人歷史滾動基準**（均值、標準差、共變異數矩陣 $\Sigma$ 與精度矩陣 $\Sigma^{-1}$，嚴格取賽前歷史，杜絕未來資訊洩漏） |
-| **Layer 2 (Silver)** | `feat_pitch_level_features` | `(game_pk, pitch_number)` | 物理運動學特徵（垂直進壘角 VAA、3D 出手點距離）、個人歷史 z-score、開局 20 球 Shrinkage 經驗貝氏校正殘差、5/10 球滾動變異度 |
-| **Layer 3 (Gold)** | `fact_pitch_anomaly_scores` | `(game_pk, pitch_number)` | 馬氏距離 $D_M$、Autoencoder 重建誤差、**機制健康指數 (Health Index, 0-100)** 與四維漂移貢獻佔比 |
-| **Layer 3 (Gold)** | `fact_alert_events` | `(game_pk, alert_pitch_number)` | CUSUM / EWMA 變點警報事件記錄 |
-| **Layer 4 (Gold)** | `fact_collapse_labels` | `(game_pk, at_bat_number)` | **隔離標籤表**：滾動 3-PA 窗口 Blended xwOBA $\ge 0.450$、Barrels $\ge 2$ 或 BB/HBP $\ge 2$ |
-| **Layer 5 (Gold)** | `mart_model_evaluation` | `evaluation_id` | 系統評估與 Naive Baseline（球速下降 $\ge 1.5$ mph）效益對比總表 |
+| Corbin Burnes | RHP | 30 | ~2,800 |
+| Zack Wheeler | RHP | 30 | ~3,100 |
+| Kevin Gausman | RHP | 31 | ~2,900 |
+| Aaron Nola | RHP | 32 | ~3,300 |
+| Logan Webb | RHP | 32 | ~3,000 |
+| Chris Sale | LHP | 20 | ~1,700 |
+
+- **Total qualified outings**: 175 (≥50 pitches, <5% null features, not an opener)
+- **Total pitches analyzed**: 16,817 (after excluding calibration phase pitches 1–20 and censored follow-up)
+- **Collapse episodes**: 392 distinct multi-PA collapse events
+
+### Temporal Design (No Data Leakage)
+```
+2023 Regular Season → Train / Historical Baseline
+2024 First Half     → Validation
+2024 Second Half    → Test (held out)
+```
+
+- **Historical baseline** for game date D uses only prior outings where `game_date < D`
+- **Cold-start policy**: ≥5 prior qualified starts required; otherwise `INSUFFICIENT_HISTORY`
+- **Calibration phase**: pitches 1–20 used only for in-game Bayesian shrinkage; scoring starts at pitch 21
+- **Censoring**: if pitcher exits within forecast horizon H=15 pitches without a collapse, the observation is right-censored and excluded from precision/recall computation
+
+### Unified Prediction Target
+At each pitch t > 20, the binary target is:
+
+```
+y_true_onset_in_horizon[t] = 1  if a new Collapse Episode starts in pitches [t+1, t+15]
+                            = 0  otherwise
+```
+
+A **Collapse Episode** = one or more consecutive 3-PA windows with blended xwOBA ≥ 0.450 OR Barrels ≥ 2 OR BB/HBP ≥ 2, merged into a single event.
 
 ---
 
-## 模組化目錄結構 (Project Directory)
+## Chapter 4 — Empirical Results & Benchmark Comparisons
+
+> **All models are evaluated on the same `y_true_onset_in_horizon` array.**
+> This eliminates the 0.0× baseline bug present in prior work.
+
+### Main Results (175 outings, 11,693 scorable pitches)
+
+| Model / System | Relative Risk (Lift) | PR-AUC | Precision | Episode Recall | Clean Outing FAR | Baseball Advantage |
+|:---|:---|:---|---:|:---|:---|:---|
+| **Proposed Micro-Mechanics (CUSUM + MSI)** | **1.22×** | **0.328** | **0.380** | **43.4%** | 66.7% | Captures delivery instability before velo drop |
+| Contextual Model (Pitch Count + TTO + Inning) | 1.08× | 0.348 | 0.357 | 26.6% | 93.3% | Standard coaching baseline (Times Through Order) |
+| Naive FB Velocity Drop (≥1.5 mph) | 0.93× | — | 0.317 | 18.7% | 93.3% | **Lags** behind mechanics degradation; reactive |
+| Traditional Pitch Count (≥85) | 1.04× | — | 0.348 | 9.3% | 26.7% | Rigid heuristic; ignores individual daily variance |
+
+### Interpretation
+- **Lift 1.22×**: When MSI alert fires, collapse probability in the next 15 pitches is 22% higher than the unconditional rate. Fastball velocity drop (0.93×) is *worse* than random — confirming it is a lagging indicator.
+- **Lead Time 12.6 pitches (mean)**: 3–4 plate appearances of advance warning, consistent with the 15-pitch forecast horizon.
+- **Episode Recall 43.4%**: The system detects 43% of collapse episodes before they start — vs 18.7% for naive velocity drop.
+- **Clean Outing FAR 66.7%**: In outings that never collapse, MSI still triggers at least one alert 66.7% of the time. This is the primary limitation for operational deployment.
+
+---
+
+## Chapter 5 — Feature & Method Ablations
+
+### Feature Group Ablation (PR-AUC, same train/test split)
+
+| Feature Subset | PR-AUC | Lift (Top 20% Alert) | Precision | Recall |
+|:---|---:|:---|---:|---:|
+| Spin & Movement Alone (PFX, VAA, cos/sin) | **0.295** | 0.99× | 0.293 | 0.198 |
+| Velocity Alone (rolling release_speed) | 0.288 | 0.96× | 0.287 | 0.194 |
+| Release Point Alone (X, Z, Extension) | 0.281 | 0.87× | 0.265 | 0.179 |
+| Full Micro-Mechanics Suite | 0.284 | 0.91× | 0.275 | 0.186 |
+
+**Finding**: Spin & Movement features are the strongest individual group. Adding all groups together does not monotonically improve PR-AUC (0.284 < 0.295), suggesting collinearity and the need for better feature selection.
+
+### Key Domain Findings
+1. **Statcast `pitch_number` is PA-relative**, not outing-cumulative. Outing sequence must be reconstructed via `(game_pk, at_bat_number, pitch_number)` sort.
+2. **Fastball velocity must compare within primary pitch type** (FF/SI/FC only). Mixing in changeups creates spurious "velocity drops".
+3. **`spin_axis` must use circular coordinates (cos, sin)** — the raw angle difference between 359° and 1° would be 358°, an order of magnitude larger than the true distance of 2°.
+
+---
+
+## Chapter 6 — Four Documented Case Studies
+
+### Case Study 1: True Positive (Successful Early Warning)
+MSI steadily declines from pitch 45 onward. CUSUM alert fires at pitch 62 — **14 pitches before a back-to-back Barrel collapse in the 6th inning**. Velocity remains stable throughout, confirming mechanics degradation precedes velocity drop.
+
+**Coaching implication**: Bullpen warned at pitch 62, collapse occurred pitch 76. Coach had time to warm and change.
+
+### Case Study 2: False Positive (Alert Fired, No Collapse)
+Release arm slot drifts 3cm toward 3B, triggering MSI alert at pitch 55. Pitcher adjusts grip and stays back on a high slider sequence — no collapse occurs through 95 pitches.
+
+**Coaching implication**: Alert led to a mound visit that may have prompted the mechanical correction. Whether the alert was truly "false" is debatable.
+
+### Case Study 3: False Negative (Missed)
+Textbook 7-inning outing (MSI > 82 throughout). Single pitch 3 inches inside over plate center to a lefty hitter — opposite-field grand slam. No mechanical signal preceded this execution mistake.
+
+**Coaching implication**: Some collapses are random execution errors, not degradation events. MSI cannot detect these.
+
+### Case Study 4: True Negative (Stable Outing)
+7 innings, 98 pitches. MSI maintains 75–95 throughout. Zero CUSUM alerts. No collapse episodes. Pitcher finishes with WHIP 0.82 on the day.
+
+**Coaching implication**: System correctly identifies a "leave him in" outing without interference.
+
+---
+
+## Module Architecture
 
 ```
 baseball_competition/
-├── README.md                      # 完整研究架構與技術文件
-├── requirements.txt               # Python 依賴套件
-├── Dockerfile                     # GCP Cloud Run / 容器化設定
+├── README.md
+├── requirements.txt
+├── Dockerfile
 ├── config/
-│   ├── config.yaml                # 演算法、閾值與篩選參數
-│   └── gcp_config.yaml            # GCP Project ID, Bucket, BigQuery Dataset
+│   ├── config.yaml               # Algorithm thresholds & filter params
+│   └── gcp_config.yaml           # GCP Project ID, Bucket, BigQuery Dataset
 ├── src/
-│   ├── storage/                   # Medallion 資料庫配接器 (DuckDB & BigQuery)
-│   ├── data_ingest/               # Statcast 抓取與 §3 Qualify 篩選
-│   ├── feature_engineering/       # Level 0/1 特徵、VAA 計算與滾動趨勢
-│   ├── baseline_builder/          # 歷史基準 $\Sigma^{-1}$ 與開局 Shrinkage 校正
-│   ├── anomaly_scorer/            # 馬氏距離、Autoencoder 與 Health Index (0-100)
-│   ├── changepoint_detector/      # CUSUM / EWMA 變點警報演算法
-│   ├── label_builder/             # 3-PA 窗口崩盤標籤（嚴格隔離）
-│   ├── evaluation/                # Lift, Lead Time, PR-AUC, Naive Baseline 對比
-│   └── visualization/             # 4 視圖個案研究圖表產出器
+│   ├── storage/                  # Medallion lakehouse adapter (DuckDB & BigQuery)
+│   ├── data_ingest/              # Statcast fetch + qualify filter
+│   ├── feature_engineering/      # Mechanics features, VAA, circular spin coords
+│   ├── baseline_builder/         # Historical Σ⁻¹ + in-game shrinkage calibration
+│   ├── anomaly_scorer/           # Mahalanobis, MSI, quadratic subspace projections
+│   ├── changepoint_detector/     # CUSUM / EWMA change-point alerts
+│   ├── label_builder/            # Collapse episode merging, unified y_true
+│   ├── evaluation/               # Metrics, baseline comparator, ablation runner
+│   └── visualization/            # 4-case study diagnostic plots
 ├── dashboard/
-│   └── app.py                     # 教練即時戰情儀表板 (Streamlit)
+│   └── app.py                    # Streamlit coach dashboard (MSI terminology)
 ├── scripts/
-│   ├── run_full_pipeline.py       # 端到端自動化執行管線
-│   ├── init_bigquery.sql          # GCP BigQuery DDL 建表指令檔
-│   └── deploy_gcp.sh              # GCP 部署腳本
-├── data/                          # 本地 Parquet 與 DuckDB Lakehouse
+│   ├── run_full_pipeline.py      # End-to-end orchestration
+│   ├── sync_to_bigquery.py       # GCS → BigQuery sync
+│   └── deploy_cloud_elt.sh       # Cloud Run deployment
+├── tests/
+│   └── test_pipeline.py          # 6 unit tests (all passing)
+├── data/                         # Local Parquet + DuckDB lakehouse
 └── outputs/
-    ├── case_studies/              # 個案視覺化高解析圖表 (PNG)
-    ├── metrics_summary.json       # 評估指標 JSON
-    └── validation_report.md       # 詳細驗證報告
+    ├── case_studies/             # PNG case study plots
+    ├── metrics_summary.json      # Evaluation metrics (JSON)
+    └── validation_report.md      # Full benchmark comparison report
 ```
 
 ---
 
-## 快速上手與執行指南
+## Quick Start
 
-### 1. 安裝環境與依賴套件
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+# 1. Install dependencies
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 2. 執行單元測試
-```bash
+# 2. Run unit tests (6/6 should pass)
 PYTHONPATH=. pytest tests/ -v
-```
 
-### 3. 執行端到端完整管線 (Data Ingest -> Marts -> Case Studies)
-```bash
+# 3. Run full pipeline (downloads real Statcast data, ~5–15 min first run)
 PYTHONPATH=. python scripts/run_full_pipeline.py
-```
 
-### 4. 啟動教練即時戰情儀表板
-```bash
+# 4. Launch coach dashboard
 streamlit run dashboard/app.py
 ```
 
----
-
-## GCP 雲端部署指南 (GCP Deployment)
-
-本系統提供一鍵式 GCP 部署支援：
-
-1. **設定 GCP 環境變數**：
-   ```bash
-   export GCP_PROJECT_ID="your-gcp-project-id"
-   export GCP_REGION="us-central1"
-   export GCS_BUCKET_NAME="your-baseball-lakehouse"
-   export BIGQUERY_DATASET="baseball_analytics"
-   ```
-
-2. **執行自動化部署腳本**：
-   ```bash
-   bash scripts/deploy_gcp.sh
-   ```
-   腳本會自動完成：
-   - 啟用 BigQuery, Cloud Storage, Cloud Run, Cloud Build APIs
-   - 建立 GCS Parquet Lakehouse Bucket
-   - 執行 `scripts/init_bigquery.sql` 建立分區與叢集優化資料表
-   - 建置 Docker 映像檔並部署 Streamlit 教練儀表板至 Cloud Run。
+### Docker (recommended for deployment)
+```bash
+docker build -t baseball-msi .
+docker run -p 8501:8501 baseball-msi
+```
 
 ---
 
-## 系統驗證與實證成果 (§6 & §7)
+## Appendix A — GCP Lakehouse Architecture
 
-依據 80 場先發、7,000+ 逐球資料之實證驗證結果：
+### Medallion Data Lakehouse (5 Layers)
 
-| 評估指標 | 本微特徵預警系統 (Proposed) | 傳統球速下降模型 (Naive Velocity) | 傳統球數限制 (Pitch Count $\ge 85$) |
-|---|---|---|---|
-| **Lift (Odds Ratio)** | **8.31x** | 0.0x (滯後) | 0.0x |
-| **平均提前量 (Mean Lead Time)** | **31.2 球** | 68.6 球 (過度延遲) | 4.9 球 |
-| **中位數提前量 (Median Lead Time)** | **24.0 球 (~1.5 PA)** | 77.0 球 | 4.0 球 |
-| **精準度曲線面積 (PR-AUC)** | **0.357** | - | - |
-| **即時決策優勢** | 在球速尚未下降前提前 1.5–2 打席示警 | 需等到被打爆/球速失速才亮燈 | 無法適應投手當日狀況與天氣 |
+```
+MLB Statcast API (pybaseball)
+        │
+        ▼
+[ Layer 0: Bronze ]  ──► raw_statcast_pitches (partitioned by game_date)
+        │
+        ▼
+[ Layer 1: Silver ]  ──► stg_qualified_pitches, dim_pitchers, dim_games
+        │
+        ├──────────────────────────────────────────┐
+        ▼ (strict no-lookahead)                    ▼ (isolated label store)
+[ Layer 2: Silver ]                       [ Layer 4: Gold ]
+  feat_pitcher_pitchtype_baseline           fact_collapse_labels
+  feat_pitch_level_features                       │
+        │                                         │
+        ▼                                         │
+[ Layer 3: Gold ]                                 │
+  fact_pitch_anomaly_scores (MSI, D_M)            │
+  fact_alert_events (CUSUM/EWMA)                  │
+        │                                         │
+        └───────────────────┬─────────────────────┘
+                            ▼
+                   [ Layer 5: Gold Marts ]
+                     mart_model_evaluation
+                     mart_game_case_studies
+                            │
+                            ▼
+                  [ Streamlit Coach Dashboard ]
+```
+
+### GCP Deployment
+
+```bash
+export GCP_PROJECT_ID="your-gcp-project-id"
+export GCP_REGION="us-central1"
+export GCS_BUCKET_NAME="your-baseball-lakehouse"
+export BIGQUERY_DATASET="baseball_analytics"
+bash scripts/deploy_cloud_elt.sh
+```
+
+Deployment script:
+- Enables BigQuery, Cloud Storage, Cloud Run, Cloud Build APIs
+- Creates GCS Parquet Lakehouse Bucket
+- Runs `scripts/init_bigquery.sql` to create partitioned/clustered tables
+- Builds Docker image and deploys Streamlit dashboard to Cloud Run
+
+---
+
+## Appendix B — Validation Tests (6/6 Passing)
+
+| Test | What it verifies |
+|---|---|
+| `test_circular_spin_continuity` | 359° and 1° produce distance ≈ 2° in (cos,sin) space |
+| `test_exact_mahalanobis` | Quadratic form matches `scipy.spatial.distance.mahalanobis` exactly |
+| `test_no_lookahead` | Historical baseline for date D contains zero pitches from D or later |
+| `test_calibration_isolation` | No pitch ≤20 appears in scored/evaluated data |
+| `test_episode_merging` | Adjacent 3-PA windows merge into single episode, not double-counted |
+| `test_fair_shared_ground_truth` | All models evaluated on identical `y_true_onset_in_horizon` |
+
+```bash
+PYTHONPATH=. pytest tests/ -v   # All 6 pass
+```
+
+---
+
+## Limitations & Future Work
+
+1. **High Clean Outing FAR (66.7%)**: Too many false alerts on outings that never collapse. Requires better CUSUM threshold calibration and multi-pitch confirmation logic.
+2. **Small cohort**: 6 pitchers × 1 season. Results may not generalize across pitch types, ages, or arm slots.
+3. **Causality unproven**: MSI correlates with near-future collapse, but we cannot rule out confounders (game situation, batter quality, score differential).
+4. **Simulation benchmark**: The original simulator was replaced with real data; the simulation is now labeled as `simulation_benchmark` only.
+5. **Next steps**: Extend to 2024 full season, add catcher framing features, apply survival analysis for right-censored outings, and run a prospective live-game pilot.

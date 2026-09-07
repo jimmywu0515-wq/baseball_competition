@@ -1,22 +1,28 @@
 """
-Health Index Computation Module
-Maps raw/calibrated multi-dimensional anomaly scores into an intuitive 0-100 Pitcher Health Index.
+Mechanics Stability Index (MSI) Module (§13 Critique Fixes)
+IMPORTANT HYPOTHESIS & NAMING REFRAMING:
+This metric is an inverse exponential transform of the Mahalanobis anomaly distance:
+    MSI = 100 * exp(-alpha * D_M)
+It measures the mechanical fidelity of the delivery relative to the pitcher's own baseline.
+It does NOT directly measure biological fatigue.
 """
 import numpy as np
-import pandas as pd
 
-def compute_pitcher_health_index(
+def compute_mechanics_stability_index(
     anomaly_scores: np.ndarray, 
-    decay_alpha: float = 0.45,
+    decay_alpha: float = 0.40,
     min_floor: float = 5.0
 ) -> np.ndarray:
     """
-    Computes Pitcher Health Index = 100 * exp(-alpha * anomaly_score).
-    - Anomaly Score = 0 (perfect baseline) -> Health Index = 100.
-    - Anomaly Score = 2.0 (moderate drift) -> Health Index ≈ 40.
-    - Anomaly Score = 4.0 (severe degradation) -> Health Index ≈ 16.
+    Computes Mechanics Stability Index (MSI) on a 0-100 scale:
+    - MSI = 100: Delivery perfectly on pitcher's personal baseline.
+    - MSI = 60: Moderate mechanical drift (Caution threshold).
+    - MSI = 35: Severe mechanical drift (Danger threshold).
     """
     scores = np.asarray(anomaly_scores, dtype=float)
-    health = 100.0 * np.exp(-decay_alpha * np.maximum(0.0, scores))
-    health = np.clip(health, min_floor, 100.0)
-    return np.round(health, 1)
+    msi = 100.0 * np.exp(-decay_alpha * np.maximum(0.0, scores))
+    msi = np.clip(msi, min_floor, 100.0)
+    return np.round(msi, 1)
+
+# Backward compatibility alias
+compute_pitcher_health_index = compute_mechanics_stability_index

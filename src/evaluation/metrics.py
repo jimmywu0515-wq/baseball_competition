@@ -1,18 +1,21 @@
 """
-Model Evaluation & Causal Lead-Time Verification Metrics (§5 Step 7 & §6)
-Computes Lift, Lead Time distribution, PR-AUC, Precision/Recall, and False Alarm Rates.
+Model Evaluation & Internally Consistent Verification Metrics (§5 Step 7 & Critique Fixes)
+1. Single shared target: y_true_onset_in_horizon.
+2. Lead Time computed ONLY for True Positive alerts.
+3. Centralized False Alarm metrics: Alert-level precision, Episode recall, FAR per outing.
+4. Relative Risk (Lift) properly distinguished from Odds Ratio.
 """
 import logging
 from typing import Dict, List, Any, Tuple
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_curve, auc, precision_score, recall_score, f1_score
+from sklearn.metrics import precision_recall_curve, auc, precision_score, recall_score, f1_score, roc_auc_score
 
 logger = logging.getLogger(__name__)
 
 class EvaluationEngine:
     """
-    Computes statistical verification metrics comparing alerts vs subsequent collapse.
+    Computes rigorous statistical verification metrics comparing alerts vs subsequent collapse episodes.
     """
     def __init__(self, horizon_pitches: int = 15):
         self.horizon_pitches = horizon_pitches
@@ -20,91 +23,142 @@ class EvaluationEngine:
     def evaluate_pipeline(self, 
                           scored_pitches_df: pd.DataFrame, 
                           alerts_df: pd.DataFrame,
-                          collapse_events_df: pd.DataFrame) -> Dict[str, Any]:
+                          collapse_episodes_df: pd.DataFrame) -> Tuple[Dict[str, Any], pd.DataFrame]:
         """
-        Runs comprehensive evaluation across all games.
+        Runs rigorous evaluation across all outings.
+        Returns:
+            metrics_summary: Dictionary of comprehensive metrics
+            evaluated_df: DataFrame with verified true/false positive labels
         """
         df = scored_pitches_df.copy()
+
+        # Exclude early calibration phase (pitches 1-20) and censored pitches from evaluation
+        eval_mask = (df["pitch_number_in_outing"] > 20) & (~df.get("is_censored_followup", False))
+        eval_df = df[eval_mask].copy()
+
+        if eval_df.empty or "y_true_onset_in_horizon" not in eval_df.columns:
+            logger.warning("Empty evaluation set or missing y_true_onset_in_horizon.")
+            return {}, df
+
+        y_true = eval_df["y_true_onset_in_horizon"].astype(int).values
         
-        # 1. Forward-looking Horizon Label:
-        # For each pitch, does a collapse occur in [pitch_num, pitch_num + horizon_pitches]?
-        df["future_collapse_in_horizon"] = False
-        
-        for g_pk, g_df in df.groupby("game_pk"):
-            collapse_pitch_indices = g_df[g_df["is_collapse_event"]]["pitch_number_in_game"].values
-            if len(collapse_pitch_indices) == 0:
-                continue
+        # Alert flag: CUSUM alert
+        if "is_cusum_alert" in eval_df.columns:
+            y_pred = eval_df["is_cusum_alert"].astype(int).values
+        else:
+            y_pred = (eval_df.get("mahalanobis_calibrated", 0.0) >= 2.5).astype(int).values
 
-            for idx, row in g_df.iterrows():
-                p_num = row["pitch_number_in_game"]
-                # Check if any collapse pitch falls within (p_num, p_num + horizon_pitches]
-                in_horizon = any((c_p > p_num) and (c_p <= p_num + self.horizon_pitches) for c_p in collapse_pitch_indices)
-                df.loc[idx, "future_collapse_in_horizon"] = in_horizon
+        # 1. Probabilities & Relative Risk (Lift)
+        n_pos_pred = np.sum(y_pred == 1)
+        n_neg_pred = np.sum(y_pred == 0)
 
-        # 2. Lift / Odds Ratio
-        y_true = df["future_collapse_in_horizon"].astype(int).values
-        y_pred = df["is_cusum_alert"].astype(int).values
-        scores = df["mahalanobis_calibrated"].values
+        p_event_given_alert = np.mean(y_true[y_pred == 1]) if n_pos_pred > 0 else 0.0
+        p_event_given_no_alert = np.mean(y_true[y_pred == 0]) if n_neg_pred > 0 else 1e-4
 
-        p_collapse_given_alert = np.mean(y_true[y_pred == 1]) if np.sum(y_pred == 1) > 0 else 0.0
-        p_collapse_given_no_alert = np.mean(y_true[y_pred == 0]) if np.sum(y_pred == 0) > 0 else 1e-4
-        lift = p_collapse_given_alert / max(p_collapse_given_no_alert, 1e-4)
+        # Relative Risk (often called Lift in business analytics)
+        lift_relative_risk = p_event_given_alert / max(p_event_given_no_alert, 1e-4)
 
-        # 3. Precision, Recall, F1, PR-AUC
+        # True Odds Ratio
+        odds_alert = p_event_given_alert / max(1e-4, (1.0 - p_event_given_alert))
+        odds_no_alert = p_event_given_no_alert / max(1e-4, (1.0 - p_event_given_no_alert))
+        true_odds_ratio = odds_alert / max(1e-4, odds_no_alert)
+
+        # 2. Precision, Recall, F1, PR-AUC, ROC-AUC
         precision = precision_score(y_true, y_pred, zero_division=0)
         recall = recall_score(y_true, y_pred, zero_division=0)
         f1 = f1_score(y_true, y_pred, zero_division=0)
 
+        scores = eval_df["mahalanobis_calibrated"].values if "mahalanobis_calibrated" in eval_df.columns else y_pred
         precisions, recalls, _ = precision_recall_curve(y_true, scores)
         pr_auc = auc(recalls, precisions)
+        roc_auc = roc_auc_score(y_true, scores) if len(np.unique(y_true)) > 1 else 0.5
 
-        # 4. Lead Time Distribution (in pitches)
-        lead_times = []
-        for g_pk, g_df in df.groupby("game_pk"):
-            alert_pitches = g_df[g_df["is_cusum_alert"]]["pitch_number_in_game"].values
-            collapse_pitches = g_df[g_df["is_collapse_event"]]["pitch_number_in_game"].values
-            
-            if len(alert_pitches) > 0 and len(collapse_pitches) > 0:
-                first_alert = alert_pitches[0]
-                # First collapse that occurred AFTER the alert
-                future_collapses = collapse_pitches[collapse_pitches >= first_alert]
-                if len(future_collapses) > 0:
-                    lead_time = future_collapses[0] - first_alert
-                    lead_times.append(lead_time)
-
-        lead_time_arr = np.array(lead_times) if lead_times else np.array([0.0])
+        # 3. Internally Consistent Lead Time
+        # Lead time is calculated ONLY for True Positive alerts (alert fires and episode onset occurs within horizon)
+        tp_lead_times_pitches = []
+        tp_lead_times_pas = []
         
-        # 5. False Alarm Rate (FAR per start)
-        # Fraction of starts with no collapse that had an alert
-        starts_no_collapse = []
-        starts_with_false_alert = []
-        for g_pk, g_df in df.groupby("game_pk"):
-            has_collapse = g_df["is_collapse_event"].any()
-            has_alert = g_df["is_cusum_alert"].any()
-            if not has_collapse:
-                starts_no_collapse.append(g_pk)
-                if has_alert:
-                    starts_with_false_alert.append(g_pk)
+        # Episode recall tracking
+        episodes_detected = 0
+        total_episodes = len(collapse_episodes_df) if collapse_episodes_df is not None else 0
 
-        far_per_start = len(starts_with_false_alert) / max(1, len(starts_no_collapse))
+        for (g_pk, pid), outing_group in eval_df.groupby(["game_pk", "pitcher"]):
+            outing_alerts = outing_group[outing_group["is_cusum_alert"]].sort_values("pitch_number_in_outing")
+            
+            # Find episodes for this outing
+            if collapse_episodes_df is not None and not collapse_episodes_df.empty:
+                outing_eps = collapse_episodes_df[
+                    (collapse_episodes_df["game_pk"] == g_pk) & 
+                    (collapse_episodes_df["pitcher"] == pid)
+                ]
+            else:
+                outing_eps = pd.DataFrame()
+
+            for _, ep in outing_eps.iterrows():
+                ep_onset_pitch = ep["onset_pitch"]
+                ep_onset_pa = ep["onset_pa"]
+                
+                # Check for alert preceding this onset within horizon [onset - H, onset)
+                valid_preceding_alerts = outing_alerts[
+                    (outing_alerts["pitch_number_in_outing"] < ep_onset_pitch) &
+                    (outing_alerts["pitch_number_in_outing"] >= ep_onset_pitch - self.horizon_pitches)
+                ]
+
+                if not valid_preceding_alerts.empty:
+                    episodes_detected += 1
+                    first_valid_alert = valid_preceding_alerts.iloc[0]
+                    lead_p = ep_onset_pitch - first_valid_alert["pitch_number_in_outing"]
+                    lead_pa = max(0, ep_onset_pa - first_valid_alert.get("pa_number_in_outing", ep_onset_pa))
+                    tp_lead_times_pitches.append(lead_p)
+                    tp_lead_times_pas.append(lead_pa)
+
+        lead_pitches_arr = np.array(tp_lead_times_pitches) if tp_lead_times_pitches else np.array([0.0])
+        lead_pas_arr = np.array(tp_lead_times_pas) if tp_lead_times_pas else np.array([0.0])
+        episode_recall = episodes_detected / max(1, total_episodes)
+
+        # 4. Rigorous False Alarm Metrics
+        # Clean outings (outings with zero collapse episodes)
+        clean_outings = 0
+        clean_outings_with_alert = 0
+        total_false_alarm_pitches = 0
+
+        for (g_pk, pid), outing_group in eval_df.groupby(["game_pk", "pitcher"]):
+            has_collapse = outing_group["y_true_onset_in_horizon"].any()
+            alert_fired = outing_group["is_cusum_alert"].any()
+            
+            if not has_collapse:
+                clean_outings += 1
+                if alert_fired:
+                    clean_outings_with_alert += 1
+            
+            total_false_alarm_pitches += np.sum((outing_group["is_cusum_alert"] == 1) & (outing_group["y_true_onset_in_horizon"] == 0))
+
+        outing_far = clean_outings_with_alert / max(1, clean_outings)
+        false_alarms_per_outing = total_false_alarm_pitches / max(1, eval_df.groupby(["game_pk", "pitcher"]).ngroups)
 
         metrics_summary = {
-            "sample_games_count": int(df["game_pk"].nunique()),
-            "total_pitches_analyzed": len(df),
-            "total_collapse_events": int(np.sum(df["is_collapse_event"])),
-            "lift_odds_ratio": round(float(lift), 2),
-            "p_collapse_given_alert": round(float(p_collapse_given_alert), 3),
-            "p_collapse_given_no_alert": round(float(p_collapse_given_no_alert), 3),
-            "pr_auc": round(float(pr_auc), 3),
-            "precision": round(float(precision), 3),
-            "recall": round(float(recall), 3),
+            "evaluated_outings_count": int(eval_df.groupby(["game_pk", "pitcher"]).ngroups),
+            "evaluated_pitches_count": len(eval_df),
+            "total_collapse_episodes": total_episodes,
+            "collapse_episodes_detected": episodes_detected,
+            "episode_recall": round(float(episode_recall), 3),
+            "lift_relative_risk": round(float(lift_relative_risk), 2),
+            "odds_ratio": round(float(true_odds_ratio), 2),
+            "pitch_precision": round(float(precision), 3),
+            "pitch_recall": round(float(recall), 3),
             "f1_score": round(float(f1), 3),
-            "lead_time_mean_pitches": round(float(np.mean(lead_time_arr)), 1),
-            "lead_time_median_pitches": round(float(np.median(lead_time_arr)), 1),
-            "lead_time_25pct_pitches": round(float(np.percentile(lead_time_arr, 25)), 1),
-            "lead_time_75pct_pitches": round(float(np.percentile(lead_time_arr, 75)), 1),
-            "false_alarm_rate_per_start": round(float(far_per_start), 3)
+            "pr_auc": round(float(pr_auc), 3),
+            "roc_auc": round(float(roc_auc), 3),
+            "lead_time_mean_pitches": round(float(np.mean(lead_pitches_arr)), 1),
+            "lead_time_median_pitches": round(float(np.median(lead_pitches_arr)), 1),
+            "lead_time_mean_pas": round(float(np.mean(lead_pas_arr)), 1),
+            "lead_time_median_pas": round(float(np.median(lead_pas_arr)), 1),
+            "outing_false_alarm_rate": round(float(outing_far), 3),
+            "false_alarms_per_outing": round(float(false_alarms_per_outing), 1)
         }
 
-        logger.info(f"Evaluation Complete | Lift: {lift:.2f}x | Mean Lead Time: {metrics_summary['lead_time_mean_pitches']} pitches | PR-AUC: {pr_auc:.3f}")
-        return metrics_summary
+        # Keep y_true_onset_in_horizon attached to df
+        df["future_collapse_in_horizon"] = df["y_true_onset_in_horizon"]
+
+        logger.info(f"Rigorous Evaluation | Lift: {lift_relative_risk:.2f}x | Episode Recall: {episode_recall*100:.1f}% | Mean Lead Time: {metrics_summary['lead_time_mean_pitches']} pitches | Outing FAR: {outing_far*100:.1f}%")
+        return metrics_summary, df

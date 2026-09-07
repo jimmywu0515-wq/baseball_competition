@@ -1,41 +1,44 @@
-# 基於微觀物理特徵衰退之時間序列疲勞與崩盤預測系統
-## 驗證報告與系統成效總結 (Model Validation & Benchmark Report)
+# 實證驅動之 MLB Statcast 投手機制漂移與近程崩盤預警系統
+## 深度驗證與基準對比實證報告 (Empirical Verification Report)
 
-### 1. 核心評估指標總表 (§6)
-
-| 評估指標 | 數值 | 說明 |
-|---|---|---|
-| **分析賽事場次** | 80 場 | 符合 §3 Qualify 先發篩選標準 |
-| **分析投球總數** | 7194 球 | 涵蓋 Level 0/1 微觀運動學特徵 |
-| **崩盤事件總數** | 139 次 | 滾動 3-PA 窗口 Blended xwOBA $\ge 0.450$ / Barrels $\ge 2$ / BB $\ge 2$ |
-| **Lift (Odds Ratio)** | **8.31x** | 警報後 15 球內崩盤機率為未警報時之倍數 |
-| **平均提前量 (Mean Lead Time)** | **31.2 球** | 警報平均比真實崩盤提早發生的球數 |
-| **中位數提前量 (Median Lead Time)**| **24.0 球** | 約提早 1.5 個完整打席（PA） |
-| **PR-AUC (Precision-Recall AUC)** | **0.357** | 針對稀有事件不平衡資料之精準度曲線面積 |
-| **誤警率 (False Alarm Rate)** | **67.2%** | 無崩盤場次中觸發警報之比例 |
-
----
-
-### 2. 與傳統方法之對比測試 (Benchmark vs Naive Baselines)
-
-| Model / System                                 | Lift (Odds Ratio)   | Mean Lead Time (Pitches)   | Median Lead Time (Pitches)   | False Alarm Rate (Per Start)   | Early Warning Advantage                            |
-|:-----------------------------------------------|:--------------------|:---------------------------|:-----------------------------|:-------------------------------|:---------------------------------------------------|
-| Proposed Micro-Mechanics (CUSUM + Mahalanobis) | 8.31x               | 31.2 pitches               | 24.0 pitches                 | 67.2%                          | Early detection before velo drop & damage          |
-| Naive Velocity Drop (>= 1.5 mph)               | 0.0x                | 68.6 pitches               | 77.0 pitches                 | 100.0%                         | Lags behind mechanics degradation by 10+ pitches   |
-| Traditional Pitch Count (>= 85 pitches)        | 0.0x                | 4.9 pitches                | 4.0 pitches                  | 67.2%                          | Rigid heuristic, ignores individual daily variance |
+### 1. 核心評估指標總表 (§6 & §7)
+- **資料來源模式**：MLB Statcast 實證數據
+- **評估出賽總數**：175 場
+- **評估投球總數**：11693 球 (嚴格排除開局 20 球校正期與審查投球)
+- **崩盤事件 (Collapse Episodes) 總數**：392 次
+- **崩盤事件召回率 (Episode Recall)**：**43.4%**
+- **相對風險比 (Relative Risk / Lift)**：**1.22x** (警報後 15 球內發生崩盤起點之相對倍率)
+- **真陽性提前量 (Lead Time - Pitches)**：**平均 12.6 球** (中位數 15.0 球)
+- **真陽性提前量 (Lead Time - PAs)**：**平均 3.8 打席** (中位數 4.0 打席)
+- **乾淨出賽誤警率 (Clean Outing FAR)**：**66.7%**
+- **精準度曲線面積 (PR-AUC)**：**0.328**
 
 ---
 
-### 3. 研究核心發現 (Key Findings)
-1. **微觀特徵領先性**：投手機制崩解首先反映於**出手機制（Release Point 3D 偏移與 Extension 下滑）**與**轉速軸（Spin Axis 飄移）**，平均比球速真正下降提早 10–15 球。
-2. **因果先行性確認**：經由 CUSUM 變點偵測觸發的警報具備高達 **8.31x** 的 Lift 關聯強度，證實警報並非隨機雜訊，而是生理疲勞與機制劣化的有效先行指標。
-3. **戰術決策價值**：平均 **31.2 球的 Lead Time** 提供總教練與投手教練充足的熱身準備窗口（約 1.5–2 個打席），能在重傷害擊球或保送堆壘前果斷啟動換投。
+### 2. 與真實棒球情境基準之公平對比 (§2 & §10)
+所有模型均在相同的 `y_true_onset_in_horizon` 陣列上評估：
+
+| Model / System                                | Relative Risk (Lift)   | PR-AUC   |   Precision | Episode Recall   | Clean Outing FAR   | Baseball Advantage                                 |
+|:----------------------------------------------|:-----------------------|:---------|------------:|:-----------------|:-------------------|:---------------------------------------------------|
+| Proposed Micro-Mechanics (CUSUM + MSI)        | 1.22x                  | 0.328    |       0.38  | 43.4%            | 66.7%              | Captures delivery instability before velo drop     |
+| Contextual Model (Pitch Count + TTO + Inning) | 1.08x                  | 0.348    |       0.357 | 26.6%            | 93.3%              | Standard coaching baseline (Times Through Order)   |
+| Naive FB Velocity Drop (>=1.5 mph)            | 0.93x                  | -        |       0.317 | 18.7%            | 93.3%              | Lags behind mechanics degradation; reactive        |
+| Traditional Pitch Count (>=85)                | 1.04x                  | -        |       0.348 | 9.3%             | 26.7%              | Rigid heuristic; ignores daily individual variance |
 
 ---
 
-### 4. 個案研究產出清單 (Case Studies)
-已於 `outputs/case_studies/` 產生下列賽事実證圖表：
-- `case_study_Gerrit_Cole_745005.png`
-- `case_study_Gerrit_Cole_745008.png`
-- `case_study_Gerrit_Cole_745011.png`
-- `case_study_Gerrit_Cole_745012.png`
+### 3. 特徵群消融實驗 (§12)
+| Feature Subset                   |   PR-AUC | Lift (Top 20% Alert)   |   Precision |   Recall |
+|:---------------------------------|---------:|:-----------------------|------------:|---------:|
+| Velocity Alone                   |    0.288 | 0.96x                  |       0.287 |    0.194 |
+| Release Point Alone (X, Z, Ext)  |    0.281 | 0.87x                  |       0.265 |    0.179 |
+| Spin & Movement Alone (PFX, VAA) |    0.295 | 0.99x                  |       0.293 |    0.198 |
+| Full Micro-Mechanics Suite       |    0.284 | 0.91x                  |       0.275 |    0.186 |
+
+---
+
+### 4. 四大真實個案診斷 (§14)
+1. **真陽性（True Positive，成功預警）**：`case_study_1_true_positive.png`
+2. **偽陽性（False Positive，虛驚一場）**：`case_study_2_false_positive.png`
+3. **偽陰性（False Negative，漏報）**：`case_study_3_false_negative.png`
+4. **真陰性（True Negative，穩定好投）**：`case_study_4_true_negative.png`

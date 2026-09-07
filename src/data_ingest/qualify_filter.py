@@ -1,6 +1,10 @@
 """
-Data Qualification Module (§3 Qualify Standards)
-Applies role filters, single-game thresholds, season consistency, and pitch-type breakdown.
+Data Qualification & Outing Sequencing Module (§3 & Critique Fixes)
+Handles:
+1. Both Home and Away starting pitcher identification.
+2. Chronological sorting by (game_pk, at_bat_number, pitch_number).
+3. Outing-level pitch and PA counters.
+4. Right-censored follow-up marking.
 """
 import logging
 from typing import Dict, List, Tuple, Set
@@ -11,82 +15,112 @@ logger = logging.getLogger(__name__)
 
 class QualifyFilter:
     """
-    Filters raw pitch data according to the research proposal specifications:
-    - Starting Pitcher only
-    - Single-game pitch count >= 50
-    - Missing mechanics rate < 5% per game
-    - Minimum qualified starts per pitcher (e.g. >= 10-15 starts)
-    - Identify top N primary pitch types per pitcher
+    Filters raw pitch data according to strict starter qualification rules
+    and enforces correct chronological outing indexing.
     """
     def __init__(self, 
                  min_pitches_per_game: int = 50,
-                 min_starts_per_season: int = 10,
+                 min_starts_per_season: int = 5,
                  max_missing_mechanics_pct: float = 0.05,
-                 top_n_pitch_types: int = 3):
+                 top_n_pitch_types: int = 3,
+                 horizon_pas: int = 3):
         self.min_pitches_per_game = min_pitches_per_game
         self.min_starts_per_season = min_starts_per_season
         self.max_missing_mechanics_pct = max_missing_mechanics_pct
         self.top_n_pitch_types = top_n_pitch_types
+        self.horizon_pas = horizon_pas
 
     def filter_qualified_games(self, raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Executes qualify screening and produces:
-        1. stg_qualified_pitches (filtered pitches)
-        2. dim_pitchers (qualified pitcher metadata & primary pitch types)
-        3. dim_games (qualified game metadata)
+        1. stg_qualified_pitches (chronologically sorted with outing counters)
+        2. dim_pitchers (metadata & qualified starts count)
+        3. dim_games (qualified outings metadata)
         """
         if raw_df.empty:
             logger.warning("Empty raw DataFrame passed to QualifyFilter.")
             return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         df = raw_df.copy()
-        
-        # 1. Identify Starting Pitchers (Pitcher of the first pitch of the game in Inning 1)
-        first_pitches = df.sort_values(by=["game_pk", "inning", "pitch_number"]).groupby("game_pk").first().reset_index()
-        starter_dict = dict(zip(first_pitches["game_pk"], first_pitches["pitcher"]))
-        
-        # Filter for starter pitches only
-        df["is_starter"] = df.apply(lambda row: starter_dict.get(row["game_pk"]) == row["pitcher"], axis=1)
+
+        # 1. Standardize types and column existence
+        if "inning_topbot" not in df.columns:
+            df["inning_topbot"] = "Top"
+        if "at_bat_number" not in df.columns:
+            df["at_bat_number"] = df.groupby(["game_pk", "inning"]).cumcount() // 4 + 1
+        if "pitch_number" not in df.columns:
+            df["pitch_number"] = df.groupby(["game_pk", "at_bat_number"]).cumcount() + 1
+
+        # 2. Correct Chronological Sorting by Game, Plate Appearance, and Pitch in PA
+        df = df.sort_values(
+            by=["game_pk", "inning", "at_bat_number", "pitch_number"], 
+            ascending=[True, True, True, True]
+        ).reset_index(drop=True)
+
+        # 3. Proper Starter Identification (Both Home and Away starters!)
+        # Pitcher who starts Inning 1 Top = Away Starter
+        # Pitcher who starts Inning 1 Bot = Home Starter
+        starter_keys = set()
+        for g_pk, g_group in df.groupby("game_pk"):
+            # Away starter
+            top1 = g_group[(g_group["inning"] == 1) & (g_group["inning_topbot"].str.lower().str.startswith("top"))]
+            if not top1.empty:
+                away_sp = top1.iloc[0]["pitcher"]
+                starter_keys.add((g_pk, away_sp))
+            # Home starter
+            bot1 = g_group[(g_group["inning"] == 1) & (g_group["inning_topbot"].str.lower().str.startswith("bot"))]
+            if not bot1.empty:
+                home_sp = bot1.iloc[0]["pitcher"]
+                starter_keys.add((g_pk, home_sp))
+            # Fallback if inning_topbot is uniform: first pitcher in game
+            if top1.empty and bot1.empty:
+                first_sp = g_group.iloc[0]["pitcher"]
+                starter_keys.add((g_pk, first_sp))
+
+        df["is_starter"] = df.apply(lambda r: (r["game_pk"], r["pitcher"]) in starter_keys, axis=1)
         df_sp = df[df["is_starter"]].copy()
-        
-        # 2. Single-game checks: Pitch count >= 50 and Missing Data < 5%
-        game_stats = df_sp.groupby(["pitcher", "pitcher_name", "game_pk", "game_date"]).agg(
-            total_pitches=("pitch_number", "count"),
-            missing_rel_x=("release_pos_x", lambda s: s.isna().mean()),
-            missing_spin_axis=("spin_axis", lambda s: s.isna().mean())
-        ).reset_index()
 
-        qualified_games_mask = (
-            (game_stats["total_pitches"] >= self.min_pitches_per_game) &
-            (game_stats["missing_rel_x"] <= self.max_missing_mechanics_pct) &
-            (game_stats["missing_spin_axis"] <= self.max_missing_mechanics_pct)
+        # 4. Compute accurate Outing-Level Sequence Counters per (game_pk, pitcher)
+        df_sp["pitch_number_in_outing"] = df_sp.groupby(["game_pk", "pitcher"]).cumcount() + 1
+        df_sp["pitch_number_in_game"] = df_sp["pitch_number_in_outing"] # Alias for consistency
+        df_sp["pa_number_in_outing"] = df_sp.groupby(["game_pk", "pitcher"])["at_bat_number"].transform(
+            lambda s: pd.factorize(s)[0] + 1
         )
-        qualified_games_df = game_stats[qualified_games_mask].copy()
-        logger.info(f"Qualified {len(qualified_games_df)} of {len(game_stats)} starter games (pitch count >= {self.min_pitches_per_game}, missing < 5%).")
 
-        # 3. Season-level check: Pitcher starts count >= min_starts_per_season
-        pitcher_starts = qualified_games_df.groupby(["pitcher", "pitcher_name"]).agg(
-            qualified_starts=("game_pk", "count")
+        # 5. Outing-level Checks: Pitch count >= 50 and Missing Data < 5%
+        outing_stats = df_sp.groupby(["pitcher", "pitcher_name", "game_pk", "game_date"]).agg(
+            total_pitches=("pitch_number_in_outing", "max"),
+            total_pas=("pa_number_in_outing", "max"),
+            missing_rel_x=("release_pos_x", lambda s: s.isna().mean()),
+            missing_spin=("spin_axis", lambda s: s.isna().mean())
         ).reset_index()
 
-        qualified_pitchers = pitcher_starts[pitcher_starts["qualified_starts"] >= self.min_starts_per_season]
-        qualified_pitcher_ids = set(qualified_pitchers["pitcher"])
-        logger.info(f"Qualified {len(qualified_pitchers)} pitchers with >= {self.min_starts_per_season} qualified starts.")
+        qualified_outings_mask = (
+            (outing_stats["total_pitches"] >= self.min_pitches_per_game) &
+            (outing_stats["missing_rel_x"] <= self.max_missing_mechanics_pct) &
+            (outing_stats["missing_spin"] <= self.max_missing_mechanics_pct)
+        )
+        qualified_outings_df = outing_stats[qualified_outings_mask].copy()
 
-        final_game_pks = set(qualified_games_df[qualified_games_df["pitcher"].isin(qualified_pitcher_ids)]["game_pk"])
+        # 6. Season Consistency Filter: Pitcher has >= min_starts_per_season qualified outings
+        pitcher_counts = qualified_outings_df.groupby("pitcher").size()
+        qualified_pitcher_ids = set(pitcher_counts[pitcher_counts >= self.min_starts_per_season].index)
+
+        final_outings = qualified_outings_df[qualified_outings_df["pitcher"].isin(qualified_pitcher_ids)]
+        final_outing_keys = set(zip(final_outings["game_pk"], final_outings["pitcher"]))
 
         # Filter pitch-level dataset
         qualified_pitches = df_sp[
-            (df_sp["pitcher"].isin(qualified_pitcher_ids)) &
-            (df_sp["game_pk"].isin(final_game_pks))
+            df_sp.apply(lambda r: (r["game_pk"], r["pitcher"]) in final_outing_keys, axis=1)
         ].copy()
 
-        # Sort pitches in chronological order
-        qualified_pitches = qualified_pitches.sort_values(
-            by=["pitcher", "game_date", "game_pk", "pitch_number"]
-        ).reset_index(drop=True)
+        # 7. Mark Right-Censored Follow-up
+        # If pitcher is removed with fewer than horizon_pas remaining, record incomplete follow-up
+        max_pa_dict = dict(zip(final_outings["game_pk"], final_outings["total_pas"]))
+        qualified_pitches["outing_total_pas"] = qualified_pitches["game_pk"].map(max_pa_dict)
+        qualified_pitches["is_censored"] = (qualified_pitches["outing_total_pas"] - qualified_pitches["pa_number_in_outing"]) < self.horizon_pas
 
-        # 4. Identify Primary Pitch Types for each pitcher
+        # 8. Identify Primary Pitch Types
         pitch_counts = qualified_pitches.groupby(["pitcher", "pitch_type"]).size().reset_index(name="count")
         pitch_counts = pitch_counts.sort_values(["pitcher", "count"], ascending=[True, False])
         top_pitches = pitch_counts.groupby("pitcher").head(self.top_n_pitch_types)
@@ -98,17 +132,12 @@ class QualifyFilter:
         qualified_pitches["is_primary_pitch_type"] = qualified_pitches.apply(
             lambda r: r["pitch_type"] in primary_pitch_map.get(r["pitcher"], []), axis=1
         )
-        
-        # Ensure pitch_number_in_game is continuous 1..N
-        qualified_pitches["pitch_number_in_game"] = (
-            qualified_pitches.groupby("game_pk").cumcount() + 1
-        )
 
-        # Build dimension tables
-        dim_pitchers = qualified_pitchers.copy()
+        dim_pitchers = qualified_pitches[["pitcher", "pitcher_name", "p_throws"]].drop_duplicates().copy()
         dim_pitchers["primary_pitch_types"] = dim_pitchers["pitcher"].map(lambda pid: ",".join(primary_pitch_map.get(pid, [])))
-        
-        dim_games = qualified_games_df[qualified_games_df["game_pk"].isin(final_game_pks)].copy()
+        dim_pitchers["qualified_starts"] = dim_pitchers["pitcher"].map(pitcher_counts.to_dict())
 
-        logger.info(f"Final Qualified Dataset: {len(qualified_pitches)} pitches across {len(dim_games)} games.")
+        dim_games = final_outings.copy()
+        logger.info(f"Qualified Dataset: {len(qualified_pitches)} pitches across {len(final_outings)} starting outings ({len(dim_pitchers)} pitchers).")
+
         return qualified_pitches, dim_pitchers, dim_games
