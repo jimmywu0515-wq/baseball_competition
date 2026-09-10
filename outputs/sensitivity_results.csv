@@ -1,0 +1,7 @@
+xwOBA Threshold,Window (PA),Horizon (Pitches),Test Episodes,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source
+0.4,3,15,22,0.364,0.8,0.04,175.8532,0.06,simulation_benchmark
+0.45,3,15,22,0.364,0.8,0.04,173.4502,0.06,simulation_benchmark
+0.5,3,15,17,0.471,0.444,0.2,139.9416,0.22,simulation_benchmark
+0.45,2,15,31,0.323,0.556,0.16,144.2953,0.12,simulation_benchmark
+0.45,3,10,22,0.318,0.636,0.08,172.9309,0.06,simulation_benchmark
+0.45,3,20,22,0.5,0.786,0.06,139.5635,0.06,simulation_benchmark

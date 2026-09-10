@@ -1,0 +1,5 @@
+Feature Subset,Test Pitch PR-AUC,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source
+Velocity Alone,0.151,0.0,0.0,0.0,,0.0,simulation_benchmark
+"Release Point Alone (X, Z, Extension)",0.32,0.5,0.688,0.1,4.2547,0.24,simulation_benchmark
+"Spin & Movement (rate, axis, PFX, VAA)",0.329,0.545,0.429,0.32,4.7156,0.18,simulation_benchmark
+Full Micro-Mechanics Suite,0.301,0.545,0.414,0.34,4.677,0.48,simulation_benchmark

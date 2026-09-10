@@ -1,0 +1,5 @@
+case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,lead_time_pitches
+TP,716024,2024-08-02,543037,Gerrit Cole (Sim),simulation_benchmark,85.0,88.0,3.0
+FP,716028,2024-08-30,543037,Gerrit Cole (Sim),simulation_benchmark,73.0,,
+FN,716025,2024-08-09,543037,Gerrit Cole (Sim),simulation_benchmark,,93.0,
+TN,716020,2024-07-05,543037,Gerrit Cole (Sim),simulation_benchmark,,,

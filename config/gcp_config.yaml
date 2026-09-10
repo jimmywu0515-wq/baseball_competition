@@ -1,0 +1,25 @@
+# GCP Lakehouse & Deployment Configuration
+
+gcp:
+  project_id: "project-f677f84f-db22-4976-96b"
+  region: "us-central1"
+  gcs_bucket: "baseball-lakehouse-f677f84f"
+  bigquery_dataset: "baseball_analytics"
+
+storage:
+  backend: "duckdb"                          # "duckdb" for local, "bigquery" for GCP
+  local_db_path: "data/baseball_warehouse.duckdb"
+  parquet_root: "data"
+
+tables:
+  bronze_raw: "raw_statcast_pitches"
+  silver_dim_pitchers: "dim_pitchers"
+  silver_dim_games: "dim_games"
+  silver_qualified_pitches: "stg_qualified_pitches"
+  silver_baselines: "feat_pitcher_pitchtype_baseline"
+  silver_features: "feat_pitch_level_features"
+  gold_anomaly_scores: "fact_pitch_anomaly_scores"
+  gold_alert_events: "fact_alert_events"
+  gold_collapse_labels: "fact_collapse_labels"
+  gold_model_evaluation: "mart_model_evaluation"
+  gold_case_studies: "mart_game_case_studies"

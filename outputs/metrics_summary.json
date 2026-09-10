@@ -1,0 +1,33 @@
+{
+  "evaluated_outings_count": 50,
+  "evaluated_pitches_count": 2964,
+  "total_collapse_episodes": 22,
+  "collapse_episodes_detected": 8,
+  "episode_recall": 0.36363636363636365,
+  "warning_precision": 0.8,
+  "total_warnings": 10,
+  "false_warnings": 2,
+  "false_warnings_per_outing": 0.04,
+  "clean_outing_false_alarm_rate": 0.0,
+  "lead_time_mean_pitches": 5.375,
+  "lead_time_median_pitches": 4.0,
+  "lead_time_mean_pas": 3.25,
+  "lead_time_median_pas": 2.5,
+  "risk_ratio_alert_vs_no_alert": 6.9743144741409235,
+  "pitch_pr_auc": 0.4074680687423149,
+  "operating_threshold": 173.45020000000002,
+  "validation_false_warnings_per_outing": 0.06,
+  "evaluation_split": "test",
+  "actual_data_sources": [
+    "simulation_benchmark"
+  ],
+  "requested_data_mode": "simulation_benchmark",
+  "actual_data_source": "simulation_benchmark",
+  "split_definition": {
+    "train": "through 2023-12-31",
+    "validation": "2024-01-01 through 2024-06-30",
+    "test": "from 2024-07-01"
+  },
+  "false_alarm_allowance": "0.5 distinct false warnings per validation outing",
+  "minimum_pitches_per_outing": 50
+}
