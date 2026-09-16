@@ -1,9 +1,17 @@
 # Baseball Fatigue & Collapse Prediction Configuration
 
 # Data Qualify Filter Settings (§3)
+ingestion:
+  start_date: "2023-03-30"
+  end_date: "2025-09-30"
+  required_seasons: [2023, 2024, 2025]
+  pitcher_ids: [669203, 554430, 592332, 605400, 657277, 519242]
+  game_type: "R"
+
 qualify:
   min_pitches_per_game: 50
-  min_starts_per_season: 10          # Min qualified starts in historical period
+  min_starts_for_cohort: 10          # Fixed using qualified outings completed by 2024-12-31
+  cohort_eligibility_end: "2024-12-31"
   max_missing_mechanics_pct: 0.05    # Max 5% missing in release_pos or spin_axis
   exclude_openers: true
   exclude_position_pitchers: true
@@ -13,6 +21,7 @@ qualify:
 # Baseline Calculation Settings (§5 Step 2 & 3)
 baseline:
   historical_window_starts: 12      # Prior N qualified starts used for baseline
+  min_prior_starts: 5               # Required completed outings before an outing can be scored
   min_pitches_for_baseline: 40      # Minimum pitches per pitch type across window
   intra_game_calibration_pitches: 20 # First N pitches of the game for shrinkage
   shrinkage_lambda: 0.35            # Weight on in-game mean vs historical baseline
@@ -61,4 +70,14 @@ evaluation:
   prediction_horizon_pas: 3         # Evaluate collapse occurrence within next 3 PAs of alert
   false_warnings_per_outing: 0.5    # Shared validation allowance for every model
   train_end: "2023-12-31"
-  validation_end: "2024-06-30"      # Test begins 2024-07-01
+  validation_end: "2024-12-31"
+  test_start: "2025-01-01"
+  bootstrap_samples: 1000
+  bootstrap_seed: 2025
+  sensitivity_horizons: [10, 15, 20, 25]
+
+historical_experiment:
+  train_end: "2023-12-31"
+  validation_end: "2024-06-30"
+  test_start: "2024-07-01"
+  test_end: "2024-12-31"

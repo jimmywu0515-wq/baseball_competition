@@ -386,11 +386,38 @@ with tab3:
     if comp_df.empty:
         st.info("No evaluated comparison is available. Run the full pipeline first.")
     else:
-        st.caption("Held-out late-2024 results; thresholds were selected on early 2024 at one false-warning allowance.")
+        st.caption(
+            "Frozen 2025 test results. Models train on 2023 and operating thresholds are selected "
+            "on 2024 under the same 0.5 false-warnings-per-outing ceiling."
+        )
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
+    result_dir = app_root / "outputs" / "real_data"
+    ci_path = result_dir / "bootstrap_confidence_intervals.csv"
+    if ci_path.exists():
+        st.subheader("Paired bootstrap 95% intervals")
+        st.caption(
+            "Outing bootstrap samples are paired across models. Pitcher-clustered intervals are "
+            "shown as a sensitivity analysis and are uncertain with a small pitcher cohort."
+        )
+        st.dataframe(pd.read_csv(ci_path), use_container_width=True, hide_index=True)
+
+    threshold_plot = result_dir / "validation_threshold_tradeoffs.png"
+    if threshold_plot.exists():
+        st.subheader("Validation threshold trade-offs")
+        st.image(str(threshold_plot), use_column_width=True)
+
+    lead_path = result_dir / "lead_time_sensitivity.csv"
+    if lead_path.exists():
+        st.subheader("Fixed-warning lead-time sensitivity")
+        st.caption(
+            "Scores, thresholds, and warning times are fixed; only the matching horizon changes. "
+            "Higher recall at a wider horizon does not by itself prove earlier prediction."
+        )
+        st.dataframe(pd.read_csv(lead_path), use_container_width=True, hide_index=True)
+
     st.subheader("🔬 Held-out feature ablations")
-    ablation_path = app_root / "outputs" / "ablation_results.csv"
+    ablation_path = app_root / "outputs" / "real_data" / "ablation_results.csv"
     if ablation_path.exists():
         st.dataframe(pd.read_csv(ablation_path), use_container_width=True, hide_index=True)
     else:
@@ -400,7 +427,7 @@ with tab3:
 
 with tab4:
     st.subheader("📋 Held-out case diagnostics (TP / FP / FN / TN)")
-    case_dir = app_root / "outputs" / "case_studies"
+    case_dir = app_root / "outputs" / "real_data" / "case_studies"
     case_index_path = case_dir / "case_study_index.csv"
     case_index = pd.read_csv(case_index_path) if case_index_path.exists() else pd.DataFrame()
 

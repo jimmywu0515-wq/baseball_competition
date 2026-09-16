@@ -39,6 +39,11 @@ class BaselineBuilder:
         self.min_prior_starts = min_prior_starts
         self.min_pitches = min_pitches_for_baseline
         self.ridge_reg = ridge_reg
+        if self.min_prior_starts > self.window_starts:
+            raise ValueError(
+                "min_prior_starts cannot exceed historical_window_starts; "
+                "the baseline would be impossible to qualify."
+            )
 
     def build_baselines(self, qualified_pitches_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
@@ -76,13 +81,21 @@ class BaselineBuilder:
                 curr_game_pk = curr_outing["game_pk"]
                 curr_date = curr_outing["game_date"]
 
-                # Prior outings strictly before index i (chronologically prior dates)
-                prior_outings = outings_list[max(0, i - self.window_starts): i]
+                # Only completed outings with dates strictly before the scoring
+                # cutoff are eligible. Same-day games are excluded because the
+                # date-only feed cannot prove their completion order.
+                prior_candidates = [
+                    outing for outing in outings_list[:i]
+                    if pd.Timestamp(outing["game_date"]) < pd.Timestamp(curr_date)
+                ]
+                prior_outings = prior_candidates[-self.window_starts:]
 
                 # Policy check: Must have at least min_prior_starts completed prior outings
                 if len(prior_outings) < self.min_prior_starts:
                     # Mark as insufficient history (cold start) - DO NOT borrow from future!
-                    for pt in df[df["pitcher"] == pitcher_id]["pitch_type"].unique():
+                    for pt in df[
+                        (df["pitcher"] == pitcher_id) & (df["game_pk"] == curr_game_pk)
+                    ]["pitch_type"].unique():
                         baseline_store[f"{pitcher_id}_{curr_game_pk}_{pt}"] = {
                             "status": "INSUFFICIENT_HISTORY",
                             "prior_starts": len(prior_outings)
@@ -92,10 +105,20 @@ class BaselineBuilder:
                 prior_pks = [g["game_pk"] for g in prior_outings]
                 prior_pitches = df[(df["pitcher"] == pitcher_id) & (df["game_pk"].isin(prior_pks))]
 
-                # Compute baseline per pitch type
-                for pt, pt_pitches in prior_pitches.groupby("pitch_type"):
+                # Compute a distinct baseline for every pitch type present in
+                # the current outing. No primary-pitch designation is required.
+                current_pitch_types = df[
+                    (df["pitcher"] == pitcher_id) & (df["game_pk"] == curr_game_pk)
+                ]["pitch_type"].dropna().unique()
+                for pt in current_pitch_types:
+                    pt_pitches = prior_pitches[prior_pitches["pitch_type"].eq(pt)]
                     X = pt_pitches[FEATURE_COLS].dropna()
                     if len(X) < self.min_pitches:
+                        baseline_store[f"{pitcher_id}_{curr_game_pk}_{pt}"] = {
+                            "status": "INSUFFICIENT_PITCH_TYPE_OBSERVATIONS",
+                            "prior_starts": len(prior_outings),
+                            "complete_observations": int(len(X)),
+                        }
                         continue
 
                     mu = X.mean().to_dict()
@@ -117,6 +140,8 @@ class BaselineBuilder:
                         "window_start_date": prior_outings[0]["game_date"],
                         "window_games_count": len(prior_outings),
                         "pitches_count": len(X),
+                        "baseline_max_source_date": max(g["game_date"] for g in prior_outings),
+                        "baseline_source_game_pks_json": json.dumps([int(g["game_pk"]) for g in prior_outings]),
                         "dataset_split": curr_outing.get("dataset_split", "unassigned"),
                         "actual_data_source": curr_outing.get("actual_data_source", "unknown"),
                         "requested_data_mode": curr_outing.get("requested_data_mode", "unknown"),
@@ -139,7 +164,8 @@ class BaselineBuilder:
                         "cov_mat": cov_mat,
                         "prec_mat": prec_mat,
                         "feature_cols": FEATURE_COLS,
-                        "prior_starts": len(prior_outings)
+                        "prior_starts": len(prior_outings),
+                        "complete_observations": int(len(X)),
                     }
 
         baseline_df = pd.DataFrame(baseline_rows)

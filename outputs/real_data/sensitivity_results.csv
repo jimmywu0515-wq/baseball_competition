@@ -1,0 +1,8 @@
+xwOBA Threshold,Window (PA),Horizon (Pitches),Test Episodes,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source
+0.4,3,15,270,0.2,0.45,0.478,193.6636,0.487,mlb_statcast
+0.45,3,15,219,0.192,0.433,0.399,214.651,0.365,mlb_statcast
+0.5,3,15,190,0.205,0.371,0.478,199.3833,0.46,mlb_statcast
+0.45,2,15,296,0.186,0.43,0.529,174.1398,0.497,mlb_statcast
+0.45,3,10,219,0.132,0.296,0.5,222.7773,0.444,mlb_statcast
+0.45,3,20,219,0.233,0.418,0.514,164.6388,0.476,mlb_statcast
+0.45,3,25,219,0.233,0.386,0.587,119.5783,0.429,mlb_statcast

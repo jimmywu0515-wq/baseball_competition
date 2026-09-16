@@ -4,8 +4,9 @@ Storage Adapter for Lakehouse: Local DuckDB / Parquet & GCP BigQuery / GCS.
 import os
 import json
 import logging
+import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Sequence, Tuple
 import pandas as pd
 import duckdb
 
@@ -61,6 +62,78 @@ class StorageManager:
         df.to_parquet(file_path, index=False, engine="pyarrow")
         logger.info(f"Saved {len(df)} rows to DuckDB table '{table_name}' and Parquet file '{file_path}'")
         return str(file_path)
+
+    def save_tables_atomically(
+        self,
+        tables: Sequence[Tuple[pd.DataFrame, str, str]],
+    ) -> Dict[str, str]:
+        """Publish a complete warehouse batch or restore every previous table/file.
+
+        Parquet files are prepared before the DuckDB transaction begins. Existing
+        Parquet files are retained as temporary backups until the database commit
+        succeeds, preventing a partial pipeline run from mixing old and new layers.
+        """
+        token = uuid.uuid4().hex
+        prepared = []
+        registered = []
+        for frame, table_name, layer in tables:
+            target_dir = getattr(self, f"{layer}_dir", self.silver_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            final_path = target_dir / f"{table_name}.parquet"
+            temp_path = target_dir / f".{table_name}.{token}.tmp.parquet"
+            backup_path = target_dir / f".{table_name}.{token}.bak.parquet"
+            frame.to_parquet(temp_path, index=False, engine="pyarrow")
+            prepared.append({
+                "frame": frame, "name": table_name, "final": final_path,
+                "temp": temp_path, "backup": backup_path,
+                "had_original": final_path.exists(), "installed": False,
+            })
+
+        self.conn.execute("BEGIN TRANSACTION")
+        try:
+            for position, item in enumerate(prepared):
+                registration = f"batch_df_{position}_{token}"
+                self.conn.register(registration, item["frame"])
+                registered.append(registration)
+                self.conn.execute(
+                    f'CREATE OR REPLACE TABLE "{item["name"]}" AS SELECT * FROM "{registration}"'
+                )
+
+            for item in prepared:
+                if item["had_original"]:
+                    os.replace(item["final"], item["backup"])
+                os.replace(item["temp"], item["final"])
+                item["installed"] = True
+
+            self.conn.execute("COMMIT")
+        except Exception:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            for item in reversed(prepared):
+                if item["installed"] and item["final"].exists():
+                    item["final"].unlink()
+                if item["backup"].exists():
+                    os.replace(item["backup"], item["final"])
+                if item["temp"].exists():
+                    item["temp"].unlink()
+            raise
+        finally:
+            for registration in registered:
+                try:
+                    self.conn.unregister(registration)
+                except Exception:
+                    pass
+
+        for item in prepared:
+            if item["backup"].exists():
+                item["backup"].unlink()
+            logger.info(
+                "Atomically published %s rows to '%s' and '%s'",
+                len(item["frame"]), item["name"], item["final"],
+            )
+        return {item["name"]: str(item["final"]) for item in prepared}
 
     def load_table(self, table_name: str, layer: Optional[str] = None) -> pd.DataFrame:
         """

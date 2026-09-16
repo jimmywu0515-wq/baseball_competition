@@ -74,6 +74,17 @@ def run_cloud_elt(use_real_data: bool = True):
         ("fact_alert_events", "gold"),
         ("fact_collapse_labels", "gold"),
         ("mart_model_evaluation", "gold"),
+        ("mart_historical_2024_evaluation", "gold"),
+        ("mart_threshold_tradeoffs", "gold"),
+        ("mart_bootstrap_confidence_intervals", "gold"),
+        ("mart_lead_time_sensitivity", "gold"),
+        ("fact_matched_warning_episodes", "gold"),
+        ("mart_lead_time_distribution", "gold"),
+        ("mart_missing_data_summary", "gold"),
+        ("audit_excluded_pitchers", "gold"),
+        ("audit_excluded_outings", "gold"),
+        ("audit_unavailable_scores", "gold"),
+        ("warehouse_integrity_report", "gold"),
     ]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     for table_name, layer in tables:

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -20,11 +23,15 @@ from src.baseline_builder.historical_baseline import BaselineBuilder
 from src.baseline_builder.shrinkage_calibrator import ShrinkageCalibrator
 from src.changepoint_detector.cusum_detector import CUSUMDetector
 from src.changepoint_detector.ewma_detector import EWMADetector
+from src.configuration import load_project_config
 from src.data_ingest.qualify_filter import QualifyFilter
 from src.data_ingest.statcast_loader import REAL_PITCHER_COHORT, StatcastLoader
 from src.evaluation.ablation_runner import AblationRunner
 from src.evaluation.baseline_comparator import BaselineComparator
+from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
+from src.evaluation.lead_time import fixed_warning_horizon_analysis
 from src.evaluation.protocol import (
+    assign_historical_temporal_split,
     assign_temporal_split,
     evaluate_warning_predictions,
     warning_events,
@@ -32,11 +39,25 @@ from src.evaluation.protocol import (
 from src.feature_engineering.mechanics_features import compute_kinematics_and_vaa
 from src.feature_engineering.rolling_stats import compute_rolling_features
 from src.label_builder.collapse_labels import CollapseLabelBuilder
+from src.reporting import render_validation_report
 from src.storage.adapter import StorageManager
+from src.storage.integrity import (
+    audit_persisted_warehouse,
+    audit_pipeline_frames,
+    prepare_raw_pitch_data,
+)
 from src.visualization.case_plots import CaseStudyVisualizer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Pipeline")
+
+
+MODEL_PREDICTIONS = {
+    "proposed": "is_proposed_operating_alert",
+    "contextual": "is_contextual_operating_alert",
+    "velocity": "is_velocity_operating_alert",
+    "pitch_count": "is_pitch_count_operating_alert",
+}
 
 
 def _json_ready(value):
@@ -49,6 +70,98 @@ def _json_ready(value):
     if isinstance(value, (np.floating, float)):
         return None if not np.isfinite(value) else float(value)
     return value
+
+
+def _missing_data_summary(raw_df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "release_speed", "release_pos_x", "release_pos_z", "release_extension",
+        "release_spin_rate", "spin_axis", "pfx_x", "pfx_z",
+    ]
+    rows = []
+    dates = pd.to_datetime(raw_df["game_date"])
+    for season, season_df in raw_df.assign(_season=dates.dt.year).groupby("_season"):
+        for column in columns:
+            missing = int(season_df[column].isna().sum())
+            rows.append({
+                "season": int(season), "column": column,
+                "row_count": int(len(season_df)), "missing_count": missing,
+                "missing_fraction": float(missing / len(season_df)),
+                "actual_data_source": season_df["actual_data_source"].iloc[0],
+            })
+    return pd.DataFrame(rows)
+
+
+def _write_protocol_manifest(
+    output_dir: Path,
+    config: dict,
+    actual_source: str,
+    frozen_thresholds: dict,
+) -> dict:
+    frozen_settings = {
+        "ingestion": config["ingestion"],
+        "qualify": config["qualify"],
+        "baseline": config["baseline"],
+        "features": config["features"],
+        "anomaly": config["anomaly"],
+        "changepoint": config["changepoint"],
+        "labels": config["labels"],
+        "evaluation": config["evaluation"],
+        "frozen_validation_thresholds": frozen_thresholds,
+    }
+    canonical = json.dumps(_json_ready(frozen_settings), sort_keys=True, separators=(",", ":"))
+    manifest = {
+        "protocol_name": "2023_train_2024_validation_2025_test",
+        "protocol_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "actual_data_source": actual_source,
+        "baseline_update_policy": (
+            "For every outing, use at most the 12 most recent qualified outings with dates "
+            "strictly before the scoring date; 2025 baselines may update only from completed prior outings."
+        ),
+        "threshold_policy": "Select on 2024 only; keep fixed for every 2025 result and bootstrap replicate.",
+        "prior_2025_exposure_disclosure": (
+            "Exploratory 2025 metrics were generated in this workspace before this revised protocol. "
+            "The current result is therefore a locked retrospective holdout evaluation, not a pristine first look."
+            if actual_source == "mlb_statcast" else "Not applicable to simulation."
+        ),
+        "frozen_settings": frozen_settings,
+    }
+    with (output_dir / "protocol_manifest.json").open("w", encoding="utf-8") as handle:
+        json.dump(_json_ready(manifest), handle, indent=2)
+    return manifest
+
+
+def _plot_threshold_curves(curves: pd.DataFrame, output_path: Path) -> None:
+    if curves.empty:
+        return
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for model_name, group in curves.groupby("Model / System", sort=False):
+        ordered = group.sort_values("false_warnings_per_outing")
+        ax.plot(
+            ordered["false_warnings_per_outing"], ordered["episode_recall"],
+            marker=".", alpha=0.7, label=model_name,
+        )
+        selected = group[group["is_selected_operating_point"]]
+        if not selected.empty:
+            row = selected.iloc[0]
+            ax.scatter(row["false_warnings_per_outing"], row["episode_recall"], marker="*", s=180)
+            if pd.notna(row.get("test_false_warnings_per_outing_at_frozen_threshold")):
+                ax.scatter(
+                    row["test_false_warnings_per_outing_at_frozen_threshold"],
+                    row["test_episode_recall_at_frozen_threshold"], marker="X", s=100,
+                )
+    allowance = float(curves["false_warning_allowance"].iloc[0])
+    ax.axvline(allowance, color="black", linestyle="--", label=f"allowance = {allowance:.2f}")
+    ax.set(
+        xlabel="False warnings per outing",
+        ylabel="Episode recall",
+        title="2024 validation trade-offs; stars selected, X marks frozen 2025 result",
+    )
+    ax.grid(alpha=0.2)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
 
 
 def _build_case_studies(df, episodes, output_dir):
@@ -131,49 +244,69 @@ def _build_case_studies(df, episodes, output_dir):
     return evidence_df
 
 
-def run_pipeline(use_real_data: bool = True, base_dir: str = str(project_root)):
+def run_pipeline(
+    use_real_data: bool = True,
+    base_dir: str = str(project_root),
+    start_dt: str = None,
+    end_dt: str = None,
+):
     base_path = Path(base_dir)
-    (base_path / "outputs").mkdir(parents=True, exist_ok=True)
+    config = load_project_config(base_path / "config" / "config.yaml")
+    start_dt = start_dt or config["ingestion"]["start_date"]
+    end_dt = end_dt or config["ingestion"]["end_date"]
+    output_dir = base_path / "outputs" / ("real_data" if use_real_data else "simulation")
+    output_dir.mkdir(parents=True, exist_ok=True)
     sm = StorageManager(base_dir=str(base_path))
     loader = StatcastLoader(cache_dir=str(base_path / "data" / "raw"))
     requested_mode = "mlb_statcast" if use_real_data else "simulation_benchmark"
 
     if use_real_data:
         raw_df = loader.fetch_real_pitchers_statcast(
-            pitcher_ids=[669203, 554430, 592332, 605400, 657277, 519242],
-            start_dt="2023-03-30", end_dt="2024-09-30",
+            pitcher_ids=[int(value) for value in config["ingestion"]["pitcher_ids"]],
+            start_dt=start_dt, end_dt=end_dt, strict=True,
         )
-        if raw_df.empty:
-            logger.warning("Statcast returned no rows; using an explicitly labeled simulation benchmark.")
-            raw_df = loader.generate_simulation_benchmark(num_pitchers=5, starts_per_pitcher=30)
-            actual_source = "simulation_benchmark"
-        else:
-            actual_source = "mlb_statcast"
+        actual_source = "mlb_statcast"
+        required_years = list(range(pd.Timestamp(start_dt).year, pd.Timestamp(end_dt).year + 1))
     else:
         raw_df = loader.generate_simulation_benchmark(num_pitchers=5, starts_per_pitcher=30)
         actual_source = "simulation_benchmark"
+        start_dt = str(pd.to_datetime(raw_df["game_date"]).min().date())
+        end_dt = str(pd.to_datetime(raw_df["game_date"]).max().date())
+        required_years = sorted(pd.to_datetime(raw_df["game_date"]).dt.year.unique().tolist())
 
     raw_df["actual_data_source"] = actual_source
     raw_df["requested_data_mode"] = requested_mode
+    raw_df = prepare_raw_pitch_data(
+        raw_df, actual_source, start_dt, end_dt, required_years=required_years
+    )
     raw_df = assign_temporal_split(raw_df)
-    sm.save_table(raw_df, "raw_statcast_pitches", layer="raw")
 
-    qualifier = QualifyFilter(min_pitches_per_game=50, min_starts_per_season=10,
-                              max_missing_mechanics_pct=0.05)
+    qualify_config = config["qualify"]
+    qualifier = QualifyFilter(
+        min_pitches_per_game=int(qualify_config["min_pitches_per_game"]),
+        min_starts_for_cohort=int(qualify_config["min_starts_for_cohort"]),
+        cohort_eligibility_end=qualify_config["cohort_eligibility_end"],
+        max_missing_mechanics_pct=float(qualify_config["max_missing_mechanics_pct"]),
+        top_n_pitch_types=int(qualify_config["top_n_pitch_types"]),
+    )
     qualified_df, dim_pitchers, dim_games = qualifier.filter_qualified_games(raw_df)
     if qualified_df.empty:
         raise RuntimeError("No outings passed the documented qualification policy.")
-    for table, name in [(qualified_df, "stg_qualified_pitches"),
-                        (dim_pitchers, "dim_pitchers"), (dim_games, "dim_games")]:
-        sm.save_table(table, name, layer="silver")
 
     features = compute_rolling_features(compute_kinematics_and_vaa(qualified_df))
-    baseline_builder = BaselineBuilder(historical_window_starts=12, min_prior_starts=5,
-                                       min_pitches_for_baseline=40)
+    baseline_config = config["baseline"]
+    baseline_builder = BaselineBuilder(
+        historical_window_starts=int(baseline_config["historical_window_starts"]),
+        min_prior_starts=int(baseline_config["min_prior_starts"]),
+        min_pitches_for_baseline=int(baseline_config["min_pitches_for_baseline"]),
+        ridge_reg=float(config["anomaly"]["ridge_regularization"]),
+    )
     baseline_df, baseline_store = baseline_builder.build_baselines(features)
-    sm.save_table(baseline_df, "feat_pitcher_pitchtype_baseline", layer="silver")
 
-    calibrator = ShrinkageCalibrator(intra_game_calibration_pitches=20, shrinkage_lambda=0.35)
+    calibrator = ShrinkageCalibrator(
+        intra_game_calibration_pitches=int(baseline_config["intra_game_calibration_pitches"]),
+        shrinkage_lambda=float(baseline_config["shrinkage_lambda"]),
+    )
     calibrated, means = [], {}
     for (pitcher, game_pk), outing in features.groupby(["pitcher", "game_pk"], sort=False):
         result, outing_means = calibrator.calibrate_outing_pitches(
@@ -182,7 +315,6 @@ def run_pipeline(use_real_data: bool = True, base_dir: str = str(project_root)):
         calibrated.append(result)
         means[(pitcher, game_pk)] = outing_means
     calibrated_df = pd.concat(calibrated, ignore_index=True)
-    sm.save_table(calibrated_df, "feat_pitch_level_features", layer="silver")
 
     scorer = MahalanobisScorer()
     scored = []
@@ -212,21 +344,71 @@ def run_pipeline(use_real_data: bool = True, base_dir: str = str(project_root)):
     labeled_df = pd.concat(labeled, ignore_index=True)
     episodes_df = pd.concat(episode_frames, ignore_index=True) if episode_frames else pd.DataFrame()
 
-    comparator = BaselineComparator(false_warnings_per_outing=0.5)
-    comparison_df, evaluated_df, model_metrics = comparator.compare_systems(
-        labeled_df, episodes_df, return_details=True
+    evaluation_config = config["evaluation"]
+    comparator = BaselineComparator(
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
+        false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
     )
+    manifest_holder = {}
+
+    def freeze_primary_protocol(thresholds):
+        manifest_holder["manifest"] = _write_protocol_manifest(
+            output_dir, config, actual_source, thresholds
+        )
+
+    comparison_df, evaluated_df, model_metrics = comparator.compare_systems(
+        labeled_df, episodes_df, return_details=True,
+        freeze_callback=freeze_primary_protocol,
+    )
+    comparison_df["Actual Data Source"] = actual_source
+    comparison_df["Experiment"] = "Primary frozen 2025 test"
+
+    # Preserve the earlier late-2024 analysis as a separately labeled historical
+    # experiment. It is never mixed into the primary 2025 comparison.
+    historical_labeled = assign_historical_temporal_split(labeled_df)
+    historical_episodes = (
+        assign_historical_temporal_split(episodes_df) if not episodes_df.empty else episodes_df
+    )
+    historical_comparator = BaselineComparator(
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
+        false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
+    )
+    historical_comparison, _, _ = historical_comparator.compare_systems(
+        historical_labeled, historical_episodes, return_details=True
+    )
+    historical_comparison["Actual Data Source"] = actual_source
+    historical_comparison["Experiment"] = "Historical July-December 2024 test"
+
+    protocol_manifest = manifest_holder["manifest"]
     metrics_summary = dict(model_metrics["proposed"])
     metrics_summary.update({
         "requested_data_mode": requested_mode,
         "actual_data_source": actual_source,
         "split_definition": {
             "train": "through 2023-12-31",
-            "validation": "2024-01-01 through 2024-06-30",
-            "test": "from 2024-07-01",
+            "validation": "2024-01-01 through 2024-12-31",
+            "test": "2025-01-01 through 2025-09-30",
         },
-        "false_alarm_allowance": "0.5 distinct false warnings per validation outing",
-        "minimum_pitches_per_outing": 50,
+        "data_coverage": {
+            "requested_start": start_dt,
+            "requested_end": end_dt,
+            "observed_start": str(pd.to_datetime(raw_df["game_date"]).min().date()),
+            "observed_end": str(pd.to_datetime(raw_df["game_date"]).max().date()),
+            "seasons_present": required_years,
+        },
+        "false_alarm_allowance": (
+            "0.5 distinct false warnings per validation outing; chosen as an operational "
+            "ceiling of approximately one unmatched warning every two starts."
+        ),
+        "minimum_pitches_per_outing": int(qualify_config["min_pitches_per_game"]),
+        "outing_filter_limitation": (
+            "The >=50-pitch filter is retrospective because final outing length is unknown live."
+        ),
+        "cohort_size": int(dim_pitchers["pitcher"].nunique()),
+        "qualified_outings": int(len(dim_games)),
+        "qualified_pitches": int(len(qualified_df)),
+        "protocol_sha256": protocol_manifest["protocol_sha256"],
+        "prior_2025_exposure_disclosure": protocol_manifest["prior_2025_exposure_disclosure"],
     })
 
     alerts_df = warning_events(evaluated_df, evaluated_df["is_proposed_operating_alert"])
@@ -235,35 +417,131 @@ def run_pipeline(use_real_data: bool = True, base_dir: str = str(project_root)):
         alerts_df["detector_type"] = "CUSUM_VALIDATION_SELECTED"
         alerts_df["operating_threshold"] = metrics_summary["operating_threshold"]
 
-    sm.save_table(evaluated_df, "fact_pitch_anomaly_scores", layer="gold")
-    sm.save_table(evaluated_df, "fact_collapse_labels", layer="gold")
-    sm.save_table(alerts_df, "fact_alert_events", layer="gold")
-    sm.save_table(comparison_df, "mart_model_evaluation", layer="gold")
+    threshold_curves = comparator.threshold_curves.copy()
+    threshold_curves["actual_data_source"] = actual_source
+    _plot_threshold_curves(threshold_curves, output_dir / "validation_threshold_tradeoffs.png")
+
+    bootstrap_outing = paired_bootstrap_confidence_intervals(
+        evaluated_df, episodes_df, MODEL_PREDICTIONS,
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
+        n_bootstrap=int(evaluation_config["bootstrap_samples"]),
+        seed=int(evaluation_config["bootstrap_seed"]),
+        cluster_by_pitcher=False,
+    )
+    bootstrap_pitcher = paired_bootstrap_confidence_intervals(
+        evaluated_df, episodes_df, MODEL_PREDICTIONS,
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
+        n_bootstrap=int(evaluation_config["bootstrap_samples"]),
+        seed=int(evaluation_config["bootstrap_seed"]),
+        cluster_by_pitcher=True,
+    )
+    bootstrap_results = pd.concat([bootstrap_outing, bootstrap_pitcher], ignore_index=True)
+    bootstrap_results["actual_data_source"] = actual_source
+
+    lead_time_sensitivity, matched_records, lead_time_distribution = fixed_warning_horizon_analysis(
+        evaluated_df, episodes_df, MODEL_PREDICTIONS,
+        horizons=evaluation_config["sensitivity_horizons"], split="test",
+    )
+    for result in (matched_records, lead_time_distribution):
+        if not result.empty and "actual_data_source" not in result:
+            result["actual_data_source"] = actual_source
 
     ablations = AblationRunner(evaluated_df, episodes_df).run_feature_ablations()
     sensitivity = AblationRunner(evaluated_df, episodes_df).run_sensitivity_analysis()
     for result in (ablations, sensitivity):
         result["Actual Data Source"] = actual_source
-    ablations.to_csv(base_path / "outputs" / "ablation_results.csv", index=False)
-    sensitivity.to_csv(base_path / "outputs" / "sensitivity_results.csv", index=False)
-    case_index = _build_case_studies(evaluated_df, episodes_df, base_path / "outputs" / "case_studies")
 
-    with open(base_path / "outputs" / "metrics_summary.json", "w", encoding="utf-8") as handle:
+    missing_data_summary = _missing_data_summary(raw_df)
+    excluded_pitchers = qualifier.last_excluded_pitchers.copy()
+    excluded_outings = qualifier.last_excluded_outings.copy()
+    for result in (excluded_pitchers, excluded_outings):
+        result["actual_data_source"] = actual_source
+    unavailable_scores = (
+        evaluated_df[~evaluated_df["score_available"].fillna(False)]
+        .assign(season=lambda frame: pd.to_datetime(frame["game_date"]).dt.year)
+        .groupby(["season", "dataset_split", "score_status", "pitch_type", "actual_data_source"],
+                 dropna=False)
+        .size().reset_index(name="pitch_count")
+    )
+
+    frames = {
+        "raw_statcast_pitches": raw_df,
+        "stg_qualified_pitches": qualified_df,
+        "dim_pitchers": dim_pitchers,
+        "dim_games": dim_games,
+        "feat_pitcher_pitchtype_baseline": baseline_df,
+        "feat_pitch_level_features": calibrated_df,
+        "fact_pitch_anomaly_scores": evaluated_df,
+        "fact_collapse_labels": evaluated_df,
+        "fact_alert_events": alerts_df,
+        "mart_model_evaluation": comparison_df,
+        "mart_historical_2024_evaluation": historical_comparison,
+        "mart_threshold_tradeoffs": threshold_curves,
+        "mart_bootstrap_confidence_intervals": bootstrap_results,
+        "mart_lead_time_sensitivity": lead_time_sensitivity,
+        "fact_matched_warning_episodes": matched_records,
+        "mart_lead_time_distribution": lead_time_distribution,
+        "mart_missing_data_summary": missing_data_summary,
+        "audit_excluded_pitchers": excluded_pitchers,
+        "audit_excluded_outings": excluded_outings,
+        "audit_unavailable_scores": unavailable_scores,
+    }
+    integrity_report = audit_pipeline_frames(frames, actual_source, required_years)
+    frames["warehouse_integrity_report"] = integrity_report
+    layer_by_table = {
+        "raw_statcast_pitches": "raw",
+        "stg_qualified_pitches": "silver",
+        "dim_pitchers": "silver",
+        "dim_games": "silver",
+        "feat_pitcher_pitchtype_baseline": "silver",
+        "feat_pitch_level_features": "silver",
+        "fact_pitch_anomaly_scores": "gold",
+        "fact_collapse_labels": "gold",
+        "fact_alert_events": "gold",
+        "mart_model_evaluation": "gold",
+        "mart_historical_2024_evaluation": "gold",
+        "mart_threshold_tradeoffs": "gold",
+        "mart_bootstrap_confidence_intervals": "gold",
+        "mart_lead_time_sensitivity": "gold",
+        "fact_matched_warning_episodes": "gold",
+        "mart_lead_time_distribution": "gold",
+        "mart_missing_data_summary": "gold",
+        "audit_excluded_pitchers": "gold",
+        "audit_excluded_outings": "gold",
+        "audit_unavailable_scores": "gold",
+        "warehouse_integrity_report": "gold",
+    }
+    sm.save_tables_atomically([
+        (frame, name, layer_by_table[name]) for name, frame in frames.items()
+    ])
+    integrity_report = audit_persisted_warehouse(sm, actual_source, required_years)
+    sm.save_tables_atomically([
+        (integrity_report, "warehouse_integrity_report", "gold")
+    ])
+
+    output_frames = {
+        "model_comparison.csv": comparison_df,
+        "historical_2024_model_comparison.csv": historical_comparison,
+        "validation_threshold_tradeoffs.csv": threshold_curves,
+        "bootstrap_confidence_intervals.csv": bootstrap_results,
+        "lead_time_sensitivity.csv": lead_time_sensitivity,
+        "matched_warning_episodes.csv": matched_records,
+        "lead_time_distribution.csv": lead_time_distribution,
+        "missing_data_summary.csv": missing_data_summary,
+        "excluded_pitchers.csv": excluded_pitchers,
+        "excluded_outings.csv": excluded_outings,
+        "unavailable_scores.csv": unavailable_scores,
+        "ablation_results.csv": ablations,
+        "sensitivity_results.csv": sensitivity,
+        "warehouse_integrity_report.csv": integrity_report,
+    }
+    for filename, frame in output_frames.items():
+        frame.to_csv(output_dir / filename, index=False)
+    case_index = _build_case_studies(evaluated_df, episodes_df, output_dir / "case_studies")
+
+    with (output_dir / "metrics_summary.json").open("w", encoding="utf-8") as handle:
         json.dump(_json_ready(metrics_summary), handle, indent=2)
-    with open(base_path / "outputs" / "validation_report.md", "w", encoding="utf-8") as handle:
-        handle.write(
-            "# Temporal holdout validation report\n\n"
-            f"- Requested mode: `{requested_mode}`\n"
-            f"- Actual data source: `{actual_source}`\n"
-            "- Train: 2023; threshold validation: January-June 2024; held-out test: July 2024 onward.\n"
-            "- Every model uses the same eligible pitches, one-to-one 15-pitch event matching, and "
-            "a threshold selected under the same validation allowance of 0.5 distinct false warnings per outing.\n\n"
-            "## Held-out model comparison\n\n" + comparison_df.to_markdown(index=False) +
-            "\n\n## Feature ablations\n\n" + ablations.to_markdown(index=False) +
-            "\n\n## Sensitivity reruns\n\n" + sensitivity.to_markdown(index=False) +
-            "\n\n## Traceable case-study index\n\n" +
-            (case_index.to_markdown(index=False) if not case_index.empty else "No complete case set was available.")
-        )
+    render_validation_report(output_dir)
     logger.info("Pipeline complete. Requested=%s actual=%s", requested_mode, actual_source)
     return metrics_summary, comparison_df, ablations
 

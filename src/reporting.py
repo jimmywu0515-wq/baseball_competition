@@ -1,0 +1,89 @@
+"""Render the traceable real-data validation report from generated artifacts."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+
+
+def _read_csv(output_dir: Path, filename: str) -> pd.DataFrame:
+    path = output_dir / filename
+    return pd.read_csv(path) if path.exists() and path.stat().st_size else pd.DataFrame()
+
+
+def _markdown(frame: pd.DataFrame, empty_message: str = "No rows.") -> str:
+    return frame.to_markdown(index=False) if not frame.empty else empty_message
+
+
+def render_validation_report(output_dir: Path) -> Path:
+    metrics = json.loads((output_dir / "metrics_summary.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output_dir / "protocol_manifest.json").read_text(encoding="utf-8"))
+    comparison = _read_csv(output_dir, "model_comparison.csv")
+    historical = _read_csv(output_dir, "historical_2024_model_comparison.csv")
+    bootstrap = _read_csv(output_dir, "bootstrap_confidence_intervals.csv")
+    lead_time = _read_csv(output_dir, "lead_time_sensitivity.csv")
+    missingness = _read_csv(output_dir, "missing_data_summary.csv")
+    excluded_pitchers = _read_csv(output_dir, "excluded_pitchers.csv")
+    excluded_outings = _read_csv(output_dir, "excluded_outings.csv")
+    unavailable = _read_csv(output_dir, "unavailable_scores.csv")
+    integrity = _read_csv(output_dir, "warehouse_integrity_report.csv")
+    ablations = _read_csv(output_dir, "ablation_results.csv")
+    sensitivity = _read_csv(output_dir, "sensitivity_results.csv")
+    case_index = _read_csv(output_dir / "case_studies", "case_study_index.csv")
+
+    unavailable_count = int(unavailable["pitch_count"].sum()) if "pitch_count" in unavailable else 0
+    accounting = pd.DataFrame([{
+        "cohort_pitchers": metrics.get("cohort_size"),
+        "qualified_outings_all_seasons": metrics.get("qualified_outings"),
+        "qualified_pitches_all_seasons": metrics.get("qualified_pitches"),
+        "test_evaluated_outings": metrics.get("evaluated_outings_count"),
+        "test_evaluated_pitches": metrics.get("evaluated_pitches_count"),
+        "test_episodes": metrics.get("total_collapse_episodes"),
+        "test_warnings": metrics.get("total_warnings"),
+        "excluded_pitchers": len(excluded_pitchers),
+        "excluded_outings": len(excluded_outings),
+        "unavailable_pitch_scores": unavailable_count,
+        "actual_data_source": metrics.get("actual_data_source"),
+    }])
+    exclusion_summary = (
+        excluded_outings.groupby("outing_qualification_reason").size()
+        .reset_index(name="outing_count")
+        if "outing_qualification_reason" in excluded_outings else pd.DataFrame()
+    )
+    unavailable_summary = (
+        unavailable.groupby("score_status", dropna=False)["pitch_count"].sum()
+        .reset_index()
+        if {"score_status", "pitch_count"}.issubset(unavailable.columns) else pd.DataFrame()
+    )
+
+    report = (
+        "# Frozen 2025 temporal holdout report\n\n"
+        f"- Actual data source: `{metrics.get('actual_data_source', 'unknown')}`\n"
+        "- Train: 2023; validation/development and threshold selection: 2024; frozen test: 2025.\n"
+        f"- Warehouse coverage: {metrics['data_coverage']['observed_start']} through "
+        f"{metrics['data_coverage']['observed_end']}.\n"
+        f"- Protocol hash: `{manifest['protocol_sha256']}`.\n"
+        f"- Exposure disclosure: {manifest['prior_2025_exposure_disclosure']}\n"
+        "- The >=50-pitch outing rule is retrospective and cannot be known at a live pitch.\n"
+        "- 2025 baselines update only from qualified outings on strictly earlier dates.\n"
+        "- Every model uses the same eligible observations and a 2024-selected threshold under "
+        "the 0.5 false-warnings-per-outing ceiling.\n"
+        "- Wider matching windows can mechanically increase recall and are not, alone, evidence of earlier prediction.\n"
+        "- Pitcher-clustered intervals use six pitchers and should be interpreted cautiously.\n\n"
+        "## Dataset accounting\n\n" + _markdown(accounting) +
+        "\n\n## Excluded outings by reason\n\n" + _markdown(exclusion_summary, "No outings were excluded.") +
+        "\n\n## Unavailable scores by reason\n\n" + _markdown(unavailable_summary) +
+        "\n\n## Missing-data summary\n\n" + _markdown(missingness) +
+        "\n\n## Warehouse integrity\n\n" + _markdown(integrity) +
+        "\n\n## Frozen 2025 model comparison\n\n" + _markdown(comparison) +
+        "\n\n## Paired bootstrap confidence intervals\n\n" + _markdown(bootstrap) +
+        "\n\n## Fixed-warning lead-time sensitivity\n\n" + _markdown(lead_time) +
+        "\n\n## Historical July-December 2024 experiment\n\n" + _markdown(historical) +
+        "\n\n## Feature ablations\n\n" + _markdown(ablations) +
+        "\n\n## Sensitivity reruns\n\n" + _markdown(sensitivity) +
+        "\n\n## Traceable case-study index\n\n" + _markdown(case_index)
+    )
+    report_path = output_dir / "validation_report.md"
+    report_path.write_text(report, encoding="utf-8")
+    return report_path

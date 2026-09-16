@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,7 @@ from src.evaluation.protocol import (
     eligible_pitch_mask,
     evaluate_warning_predictions,
     select_operating_threshold,
+    threshold_tradeoff_curve,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ PRIMARY_FASTBALLS = ("FF", "SI", "FC")
 
 
 class BaselineComparator:
-    """Compare all systems on late-2024 episodes at matched warning allowance."""
+    """Freeze operating points on validation, then compare systems on test."""
 
     def __init__(self, velocity_drop_mph: float = 1.5, pitch_count_thresh: int = 85,
                  horizon_pitches: int = 15, false_warnings_per_outing: float = 0.5):
@@ -31,6 +32,10 @@ class BaselineComparator:
         self.pitch_count_thresh = pitch_count_thresh
         self.horizon_pitches = horizon_pitches
         self.false_warnings_per_outing = false_warnings_per_outing
+        self.threshold_curves = pd.DataFrame()
+        self.warning_records = pd.DataFrame()
+        self.match_records = pd.DataFrame()
+        self.frozen_thresholds: Dict[str, float] = {}
 
     @staticmethod
     def _velocity_drop_scores(df: pd.DataFrame) -> pd.Series:
@@ -96,6 +101,7 @@ class BaselineComparator:
         labeled_df: pd.DataFrame,
         collapse_episodes_df: Optional[pd.DataFrame] = None,
         return_details: bool = False,
+        freeze_callback: Optional[Callable[[Dict[str, float]], None]] = None,
     ):
         df = labeled_df.copy()
         if "dataset_split" not in df:
@@ -119,20 +125,47 @@ class BaselineComparator:
             ("proposed", "Proposed Micro-Mechanics (CUSUM + MSI)", "score_proposed_cusum",
              "Mechanical-drift score; association is not evidence of fatigue causality."),
             ("contextual", "Contextual Model (Pitch Count + TTO + Inning)", "score_contextual",
-             "Fit on 2023 only; threshold selected on early 2024."),
+             "Fit on 2023 only; threshold selected on 2024 validation data."),
             ("velocity", "Pitch-Type Velocity Drop (FF/SI/FC separately)", "score_velocity_drop",
              "A contemporaneous velocity benchmark; relative risk alone does not establish timing."),
             ("pitch_count", "Traditional Pitch Count", "score_pitch_count",
              "A workload heuristic with the same validation selection rule."),
         ]
 
-        rows = []
-        metrics_by_model: Dict[str, Dict[str, Any]] = {}
-        for key, display_name, score_col, interpretation in model_specs:
+        # Pass 1 uses validation only. These operating points are frozen before
+        # any 2025 metric is calculated.
+        curve_frames = []
+        validation_by_model = {}
+        for key, display_name, score_col, _ in model_specs:
             threshold, validation_metrics = select_operating_threshold(
                 df, collapse_episodes_df, score_col, self.false_warnings_per_outing,
                 horizon_pitches=self.horizon_pitches, split="validation"
             )
+            self.frozen_thresholds[key] = threshold
+            validation_by_model[key] = validation_metrics
+            curve = threshold_tradeoff_curve(
+                df, collapse_episodes_df, score_col,
+                horizon_pitches=self.horizon_pitches, split="validation",
+            )
+            curve["model_key"] = key
+            curve["Model / System"] = display_name
+            curve["score_column"] = score_col
+            curve["false_warning_allowance"] = self.false_warnings_per_outing
+            curve["is_selected_operating_point"] = np.isclose(
+                curve["threshold"], threshold, equal_nan=False
+            )
+            curve_frames.append(curve)
+
+        if freeze_callback is not None:
+            freeze_callback(dict(self.frozen_thresholds))
+
+        rows = []
+        warning_frames = []
+        match_frames = []
+        metrics_by_model: Dict[str, Dict[str, Any]] = {}
+        for key, display_name, score_col, interpretation in model_specs:
+            threshold = self.frozen_thresholds[key]
+            validation_metrics = validation_by_model[key]
             prediction_col = f"is_{key}_operating_alert"
             df[prediction_col] = df[score_col].ge(threshold) & df[score_col].notna()
             test_metrics, warnings, matches = evaluate_warning_predictions(
@@ -149,6 +182,19 @@ class BaselineComparator:
                 map(str, df.loc[eligible_pitch_mask(df, "test"), "actual_data_source"].dropna().unique())
             ) if "actual_data_source" in df else ["unknown"]
             metrics_by_model[key] = test_metrics
+            if not warnings.empty:
+                warning_frames.append(warnings.assign(model_key=key, model_name=display_name))
+            if not matches.empty:
+                match_frames.append(matches.assign(model_key=key, model_name=display_name))
+
+            if curve_frames:
+                curve = curve_frames[[item["model_key"].iloc[0] for item in curve_frames].index(key)]
+                selected = curve["is_selected_operating_point"]
+                curve.loc[selected, "test_episode_recall_at_frozen_threshold"] = test_metrics["episode_recall"]
+                curve.loc[selected, "test_warning_precision_at_frozen_threshold"] = test_metrics["warning_precision"]
+                curve.loc[selected, "test_false_warnings_per_outing_at_frozen_threshold"] = test_metrics[
+                    "false_warnings_per_outing"
+                ]
 
             def fmt(value, digits=3):
                 return np.nan if not np.isfinite(value) else round(float(value), digits)
@@ -170,6 +216,13 @@ class BaselineComparator:
             })
 
         comparison = pd.DataFrame(rows)
+        self.threshold_curves = pd.concat(curve_frames, ignore_index=True)
+        self.warning_records = (
+            pd.concat(warning_frames, ignore_index=True) if warning_frames else pd.DataFrame()
+        )
+        self.match_records = (
+            pd.concat(match_frames, ignore_index=True) if match_frames else pd.DataFrame()
+        )
         logger.info("\n%s", comparison.to_string(index=False))
         if return_details:
             return comparison, df, metrics_by_model

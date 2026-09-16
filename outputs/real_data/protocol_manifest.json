@@ -1,0 +1,107 @@
+{
+  "protocol_name": "2023_train_2024_validation_2025_test",
+  "protocol_sha256": "a02d63cfc72e614b9a93a959b9b2eb51ce48a4689937c0792b297bb5c8dfb62d",
+  "recorded_at_utc": "2026-09-16T20:23:53.407180+00:00",
+  "actual_data_source": "mlb_statcast",
+  "baseline_update_policy": "For every outing, use at most the 12 most recent qualified outings with dates strictly before the scoring date; 2025 baselines may update only from completed prior outings.",
+  "threshold_policy": "Select on 2024 only; keep fixed for every 2025 result and bootstrap replicate.",
+  "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
+  "frozen_settings": {
+    "ingestion": {
+      "start_date": "2023-03-30",
+      "end_date": "2025-09-30",
+      "required_seasons": [
+        2023,
+        2024,
+        2025
+      ],
+      "pitcher_ids": [
+        669203,
+        554430,
+        592332,
+        605400,
+        657277,
+        519242
+      ],
+      "game_type": "R"
+    },
+    "qualify": {
+      "min_pitches_per_game": 50,
+      "min_starts_for_cohort": 10,
+      "cohort_eligibility_end": "2024-12-31",
+      "max_missing_mechanics_pct": 0.05,
+      "exclude_openers": true,
+      "exclude_position_pitchers": true,
+      "exclude_rain_delays_min": 30,
+      "top_n_pitch_types": 3
+    },
+    "baseline": {
+      "historical_window_starts": 12,
+      "min_prior_starts": 5,
+      "min_pitches_for_baseline": 40,
+      "intra_game_calibration_pitches": 20,
+      "shrinkage_lambda": 0.35
+    },
+    "features": {
+      "mechanics_cols": [
+        "release_pos_x",
+        "release_pos_z",
+        "release_extension",
+        "release_speed",
+        "release_spin_rate",
+        "spin_axis",
+        "pfx_x",
+        "pfx_z",
+        "vaa"
+      ],
+      "rolling_windows": [
+        5,
+        10
+      ]
+    },
+    "anomaly": {
+      "method": "mahalanobis",
+      "ridge_regularization": "1e-4",
+      "health_index_decay_alpha": 0.45
+    },
+    "changepoint": {
+      "detector": "cusum",
+      "cusum_slack_k": 0.5,
+      "cusum_threshold_h": 4.5,
+      "ewma_lambda": 0.2,
+      "ewma_threshold_sigma": 2.8,
+      "consecutive_anomaly_pitches": 3
+    },
+    "labels": {
+      "window_pa_size": 3,
+      "blended_xwoba_percentile": 0.9,
+      "blended_xwoba_threshold": 0.45,
+      "min_barrels_in_window": 2,
+      "min_bb_hbp_in_window": 2
+    },
+    "evaluation": {
+      "naive_velocity_drop_mph": 1.5,
+      "naive_pitch_count_threshold": 85,
+      "prediction_horizon_pitches": 15,
+      "prediction_horizon_pas": 3,
+      "false_warnings_per_outing": 0.5,
+      "train_end": "2023-12-31",
+      "validation_end": "2024-12-31",
+      "test_start": "2025-01-01",
+      "bootstrap_samples": 1000,
+      "bootstrap_seed": 2025,
+      "sensitivity_horizons": [
+        10,
+        15,
+        20,
+        25
+      ]
+    },
+    "frozen_validation_thresholds": {
+      "proposed": 214.651,
+      "contextual": 0.538493555718515,
+      "velocity": null,
+      "pitch_count": 86.0
+    }
+  }
+}

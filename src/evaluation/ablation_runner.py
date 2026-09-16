@@ -93,6 +93,7 @@ class AblationRunner:
         settings = [
             (0.400, 3, 15), (0.450, 3, 15), (0.500, 3, 15),
             (0.450, 2, 15), (0.450, 3, 10), (0.450, 3, 20),
+            (0.450, 3, 25),
         ]
         rows = []
         for threshold, window_pas, horizon in settings:

@@ -1,0 +1,8 @@
+pitcher,pitcher_name,game_pk,game_date,total_pitches,total_pas,missing_rel_x,missing_spin,actual_data_source,requested_data_mode,dataset_split,outing_qualification_reason,season
+554430,Zack Wheeler,718525,2023-04-18,94,24,0.0,0.09574468085106383,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,
+592332,Kevin Gausman,718686,2023-04-06,86,24,0.0,0.09302325581395349,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,
+592332,Kevin Gausman,746474,2024-05-23,98,21,0.9183673469387755,0.9285714285714286,mlb_statcast,mlb_statcast,validation,EXCESS_MISSING_SPIN_AXIS,
+605400,Aaron Nola,717216,2023-07-29,98,26,0.0,0.10204081632653061,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,
+657277,Logan Webb,718409,2023-04-27,102,27,0.0,0.058823529411764705,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,
+657277,Logan Webb,718781,2023-03-30,92,24,0.0,0.05434782608695652,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,
+669203,Corbin Burnes,718293,2023-05-05,94,25,0.0,0.2127659574468085,mlb_statcast,mlb_statcast,train,EXCESS_MISSING_SPIN_AXIS,

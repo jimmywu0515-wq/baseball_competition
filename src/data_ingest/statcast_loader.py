@@ -12,6 +12,13 @@ from typing import List, Optional, Dict, Any
 import pandas as pd
 import numpy as np
 
+# Keep the third-party cache inside the project so imports are reproducible in
+# restricted environments and never depend on a writable user profile.
+os.environ.setdefault(
+    "PYBASEBALL_CACHE",
+    str(Path(__file__).resolve().parent.parent.parent / "data" / "raw" / ".pybaseball_cache"),
+)
+
 try:
     import pybaseball
     from pybaseball import statcast, statcast_pitcher, playerid_lookup
@@ -21,7 +28,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Documented MLB Pitcher Cohort (2023-2024 Seasons)
+# Documented MLB Pitcher Cohort (2023-2025 Seasons)
 REAL_PITCHER_COHORT = {
     669203: {"name": "Corbin Burnes", "throws": "R", "primary_fb": "FC"},
     554430: {"name": "Zack Wheeler", "throws": "R", "primary_fb": "FF"},
@@ -47,48 +54,82 @@ class StatcastLoader:
     def fetch_real_pitchers_statcast(self, 
                                      pitcher_ids: Optional[List[int]] = None, 
                                      start_dt: str = "2023-03-30",
-                                     end_dt: str = "2024-09-30",
-                                     force_refresh: bool = False) -> pd.DataFrame:
+                                     end_dt: str = "2025-09-30",
+                                     force_refresh: bool = False,
+                                     strict: bool = True) -> pd.DataFrame:
         """
         Fetches real MLB Statcast data for specified pitchers across date ranges.
         Uses local Parquet caching per pitcher.
         """
+        if pybaseball is None:
+            raise RuntimeError("pybaseball is required for real Statcast ingestion.")
         if pitcher_ids is None:
             pitcher_ids = list(REAL_PITCHER_COHORT.keys())
 
         all_dfs = []
+        failures = []
+        start = pd.Timestamp(start_dt)
+        end = pd.Timestamp(end_dt)
         for pid in pitcher_ids:
             p_name = REAL_PITCHER_COHORT.get(pid, {}).get("name", str(pid))
-            cache_file = self.cache_dir / f"real_statcast_{pid}_{start_dt}_{end_dt}.parquet"
-            
-            if not force_refresh and cache_file.exists():
-                logger.info(f"Loading cached real Statcast data for {p_name} ({pid}) from {cache_file.name}")
-                df_p = pd.read_parquet(cache_file)
-                all_dfs.append(df_p)
-                continue
+            for year in range(start.year, end.year + 1):
+                segment_start = max(start, pd.Timestamp(year=year, month=1, day=1))
+                segment_end = min(end, pd.Timestamp(year=year, month=12, day=31))
+                segment_start_str = segment_start.strftime("%Y-%m-%d")
+                segment_end_str = segment_end.strftime("%Y-%m-%d")
+                cache_file = self.cache_dir / (
+                    f"real_statcast_{pid}_{segment_start_str}_{segment_end_str}.parquet"
+                )
 
-            logger.info(f"Fetching real Statcast data for {p_name} ({pid}) from {start_dt} to {end_dt}...")
-            try:
-                df_p = pybaseball.statcast_pitcher(start_dt, end_dt, player_id=pid)
-                if df_p is not None and not df_p.empty:
-                    # Enrich with pitcher name and throws if missing
+                try:
+                    if not force_refresh and cache_file.exists():
+                        logger.info(
+                            "Loading cached Statcast data for %s (%s), season %s",
+                            p_name, pid, year,
+                        )
+                        df_p = pd.read_parquet(cache_file)
+                    else:
+                        logger.info(
+                            "Fetching Statcast data for %s (%s) from %s to %s",
+                            p_name, pid, segment_start_str, segment_end_str,
+                        )
+                        df_p = pybaseball.statcast_pitcher(
+                            segment_start_str, segment_end_str, player_id=pid
+                        )
+
+                    if df_p is None or df_p.empty:
+                        raise RuntimeError("Statcast returned no pitches")
+                    df_p = df_p.copy()
                     if "pitcher_name" not in df_p.columns:
                         df_p["pitcher_name"] = p_name
                     if "p_throws" not in df_p.columns:
                         df_p["p_throws"] = REAL_PITCHER_COHORT.get(pid, {}).get("throws", "R")
                     df_p["actual_data_source"] = "mlb_statcast"
-                    
-                    df_p.to_parquet(cache_file, index=False, engine="pyarrow")
-                    logger.info(f"Cached {len(df_p)} pitches for {p_name} to {cache_file.name}")
+                    df_p["ingest_requested_start"] = segment_start_str
+                    df_p["ingest_requested_end"] = segment_end_str
+                    df_p["ingest_pitcher_id"] = int(pid)
+
+                    if force_refresh or not cache_file.exists():
+                        df_p.to_parquet(cache_file, index=False, engine="pyarrow")
+                        logger.info("Cached %s pitches in %s", len(df_p), cache_file.name)
                     all_dfs.append(df_p)
-                else:
-                    logger.warning(f"No pitches returned for pitcher {p_name} ({pid}).")
-            except Exception as e:
-                logger.error(f"Error fetching Statcast data for {p_name}: {e}")
+                except Exception as exc:
+                    failure = f"{p_name} ({pid}) {year}: {exc}"
+                    failures.append(failure)
+                    logger.error("Statcast segment failed: %s", failure)
+
+        if failures and strict:
+            raise RuntimeError(
+                "Real Statcast ingestion was incomplete; warehouse publication aborted. "
+                + " | ".join(failures)
+            )
 
         if all_dfs:
             combined = pd.concat(all_dfs, ignore_index=True)
-            logger.info(f"Successfully loaded {len(combined)} real Statcast pitches across {len(all_dfs)} pitchers.")
+            logger.info(
+                "Successfully loaded %s real Statcast pitches across %s pitcher-season segments.",
+                len(combined), len(all_dfs),
+            )
             return combined
         else:
             logger.warning("No real data fetched. Please check network connection.")
@@ -122,17 +163,21 @@ class StatcastLoader:
                 game_pk_counter += 1
                 # Distribute every benchmark across all three documented temporal
                 # partitions so fallback runs cannot masquerade as held-out MLB results.
-                first_cut = max(1, starts_per_pitcher // 3)
-                second_cut = max(first_cut + 1, (2 * starts_per_pitcher) // 3)
+                first_cut = max(1, starts_per_pitcher // 4)
+                second_cut = max(first_cut + 1, starts_per_pitcher // 2)
+                third_cut = max(second_cut + 1, (3 * starts_per_pitcher) // 4)
                 if start_idx < first_cut:
                     period_start = datetime(2023, 4, 1)
                     period_index = start_idx
                 elif start_idx < second_cut:
                     period_start = datetime(2024, 4, 1)
                     period_index = start_idx - first_cut
-                else:
+                elif start_idx < third_cut:
                     period_start = datetime(2024, 7, 5)
                     period_index = start_idx - second_cut
+                else:
+                    period_start = datetime(2025, 4, 1)
+                    period_index = start_idx - third_cut
                 game_date = (period_start + timedelta(days=period_index * 7 + p_idx)).strftime("%Y-%m-%d")
                 total_pitches = np.random.randint(80, 102)
                 

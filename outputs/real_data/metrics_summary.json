@@ -1,0 +1,50 @@
+{
+  "evaluated_outings_count": 138,
+  "evaluated_pitches_count": 9172,
+  "total_collapse_episodes": 219,
+  "collapse_episodes_detected": 42,
+  "episode_recall": 0.1917808219178082,
+  "warning_precision": 0.4329896907216495,
+  "total_warnings": 97,
+  "false_warnings": 55,
+  "false_warnings_per_outing": 0.39855072463768115,
+  "clean_outing_false_alarm_rate": 0.5,
+  "lead_time_mean_pitches": 8.380952380952381,
+  "lead_time_median_pitches": 9.0,
+  "lead_time_mean_pas": 2.5,
+  "lead_time_median_pas": 3.0,
+  "risk_ratio_alert_vs_no_alert": 1.4537416109877617,
+  "pitch_pr_auc": 0.3553509262474077,
+  "operating_threshold": 214.651,
+  "validation_false_warnings_per_outing": 0.36507936507936506,
+  "evaluation_split": "test",
+  "actual_data_sources": [
+    "mlb_statcast"
+  ],
+  "requested_data_mode": "mlb_statcast",
+  "actual_data_source": "mlb_statcast",
+  "split_definition": {
+    "train": "through 2023-12-31",
+    "validation": "2024-01-01 through 2024-12-31",
+    "test": "2025-01-01 through 2025-09-30"
+  },
+  "data_coverage": {
+    "requested_start": "2023-03-30",
+    "requested_end": "2025-09-30",
+    "observed_start": "2023-03-30",
+    "observed_end": "2025-09-28",
+    "seasons_present": [
+      2023,
+      2024,
+      2025
+    ]
+  },
+  "false_alarm_allowance": "0.5 distinct false warnings per validation outing; chosen as an operational ceiling of approximately one unmatched warning every two starts.",
+  "minimum_pitches_per_outing": 50,
+  "outing_filter_limitation": "The >=50-pitch filter is retrospective because final outing length is unknown live.",
+  "cohort_size": 6,
+  "qualified_outings": 501,
+  "qualified_pitches": 48135,
+  "protocol_sha256": "a02d63cfc72e614b9a93a959b9b2eb51ce48a4689937c0792b297bb5c8dfb62d",
+  "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look."
+}

@@ -1,0 +1,5 @@
+Model / System,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Test Clean Outing FAR,Test Pitch PR-AUC,Test Risk Ratio (Alert vs No Alert),Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source,Interpretation,Experiment
+Proposed Micro-Mechanics (CUSUM + MSI),0.094,0.295,0.348,0.273,0.296,0.64,227.3962,0.25,mlb_statcast,Mechanical-drift score; association is not evidence of fatigue causality.,Historical July-December 2024 test
+Contextual Model (Pitch Count + TTO + Inning),0.109,0.273,0.449,0.182,0.333,1.28,0.5405,0.39,mlb_statcast,Fit on 2023 only; threshold selected on 2024 validation data.,Historical July-December 2024 test
+Pitch-Type Velocity Drop (FF/SI/FC separately),0.0,0.0,0.011,0.0,0.331,0.0,2.9873,0.0,mlb_statcast,A contemporaneous velocity benchmark; relative risk alone does not establish timing.,Historical July-December 2024 test
+Traditional Pitch Count,0.123,0.23,0.64,0.636,0.303,0.81,80.0,0.5,mlb_statcast,A workload heuristic with the same validation selection rule.,Historical July-December 2024 test

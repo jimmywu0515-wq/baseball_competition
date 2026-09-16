@@ -81,8 +81,14 @@ class MahalanobisScorer:
                 contrib_spd.append(np.nan)
                 contrib_spin.append(np.nan)
                 contrib_mov.append(np.nan)
-                dominant_feature.append("Unavailable: insufficient history")
-                score_status.append("INSUFFICIENT_HISTORY")
+                unavailable_status = (
+                    base_info.get("status", "INSUFFICIENT_HISTORY")
+                    if base_info is not None else "INSUFFICIENT_HISTORY"
+                )
+                if pt not in calibrated_means and unavailable_status == "QUALIFIED":
+                    unavailable_status = "INSUFFICIENT_CALIBRATION_PITCHES"
+                dominant_feature.append(f"Unavailable: {unavailable_status.lower()}")
+                score_status.append(unavailable_status)
                 continue
 
             x = np.array([row.get(c, 0.0) for c in FEATURE_COLS])

@@ -20,15 +20,24 @@ class QualifyFilter:
     """
     def __init__(self, 
                  min_pitches_per_game: int = 50,
-                 min_starts_per_season: int = 5,
+                 min_starts_per_season: int = None,
+                 min_starts_for_cohort: int = 10,
+                 cohort_eligibility_end: str = "2024-12-31",
                  max_missing_mechanics_pct: float = 0.05,
                  top_n_pitch_types: int = 3,
                  horizon_pas: int = 3):
         self.min_pitches_per_game = min_pitches_per_game
-        self.min_starts_per_season = min_starts_per_season
+        # The legacy argument remains as an alias for callers/tests, but the
+        # count is now applied once using only pre-test information.
+        self.min_starts_for_cohort = int(
+            min_starts_per_season if min_starts_per_season is not None else min_starts_for_cohort
+        )
+        self.cohort_eligibility_end = pd.Timestamp(cohort_eligibility_end)
         self.max_missing_mechanics_pct = max_missing_mechanics_pct
         self.top_n_pitch_types = top_n_pitch_types
         self.horizon_pas = horizon_pas
+        self.last_excluded_pitchers = pd.DataFrame()
+        self.last_excluded_outings = pd.DataFrame()
 
     def filter_qualified_games(self, raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
@@ -72,10 +81,8 @@ class QualifyFilter:
             if not bot1.empty:
                 home_sp = bot1.iloc[0]["pitcher"]
                 starter_keys.add((g_pk, home_sp))
-            # Fallback if inning_topbot is uniform: first pitcher in game
-            if top1.empty and bot1.empty:
-                first_sp = g_group.iloc[0]["pitcher"]
-                starter_keys.add((g_pk, first_sp))
+            # No fallback for outings that begin after inning one: those are
+            # relief appearances, not starters, in pitcher-scoped Statcast data.
 
         df["is_starter"] = df.apply(lambda r: (r["game_pk"], r["pitcher"]) in starter_keys, axis=1)
         df_sp = df[df["is_starter"]].copy()
@@ -104,26 +111,60 @@ class QualifyFilter:
                     provenance, on=["pitcher", "pitcher_name", "game_pk", "game_date"], how="left"
                 )
 
-        qualified_outings_mask = (
-            (outing_stats["total_pitches"] >= self.min_pitches_per_game) &
-            (outing_stats["missing_rel_x"] <= self.max_missing_mechanics_pct) &
-            (outing_stats["missing_spin"] <= self.max_missing_mechanics_pct)
-        )
+        outing_stats["outing_qualification_reason"] = "INCLUDED"
+        outing_stats.loc[
+            outing_stats["total_pitches"] < self.min_pitches_per_game,
+            "outing_qualification_reason",
+        ] = "RETROSPECTIVE_OUTING_UNDER_MIN_PITCHES"
+        outing_stats.loc[
+            outing_stats["missing_rel_x"] > self.max_missing_mechanics_pct,
+            "outing_qualification_reason",
+        ] = "EXCESS_MISSING_RELEASE_POSITION"
+        outing_stats.loc[
+            outing_stats["missing_spin"] > self.max_missing_mechanics_pct,
+            "outing_qualification_reason",
+        ] = "EXCESS_MISSING_SPIN_AXIS"
+        qualified_outings_mask = outing_stats["outing_qualification_reason"].eq("INCLUDED")
         qualified_outings_df = outing_stats[qualified_outings_mask].copy()
 
-        # 6. Season Consistency Filter: every retained pitcher-season has enough starts.
+        # 6. Freeze cohort eligibility using information available before 2025.
+        # Future 2025 starts never decide whether a pitcher belongs to the cohort.
         qualified_outings_df["season"] = pd.to_datetime(
             qualified_outings_df["game_date"], errors="coerce"
         ).dt.year
-        season_counts = qualified_outings_df.groupby(["pitcher", "season"]).size()
-        qualified_pitcher_seasons = set(
-            season_counts[season_counts >= self.min_starts_per_season].index
-        )
-        final_outings = qualified_outings_df[
-            qualified_outings_df.apply(
-                lambda row: (row["pitcher"], row["season"]) in qualified_pitcher_seasons, axis=1
-            )
+        pretest = qualified_outings_df[
+            pd.to_datetime(qualified_outings_df["game_date"]) <= self.cohort_eligibility_end
         ]
+        pretest_counts = pretest.groupby("pitcher").size().rename("pretest_qualified_starts")
+        pitcher_names = outing_stats[["pitcher", "pitcher_name"]].drop_duplicates("pitcher")
+        cohort_audit = pitcher_names.merge(pretest_counts, on="pitcher", how="left").fillna(
+            {"pretest_qualified_starts": 0}
+        )
+        cohort_audit["pretest_qualified_starts"] = cohort_audit["pretest_qualified_starts"].astype(int)
+        cohort_audit["cohort_eligible"] = (
+            cohort_audit["pretest_qualified_starts"] >= self.min_starts_for_cohort
+        )
+        cohort_audit["cohort_eligibility_cutoff"] = self.cohort_eligibility_end
+        cohort_audit["exclusion_reason"] = np.where(
+            cohort_audit["cohort_eligible"],
+            "INCLUDED",
+            "INSUFFICIENT_PRETEST_QUALIFIED_STARTS",
+        )
+        qualified_pitchers = set(cohort_audit.loc[cohort_audit["cohort_eligible"], "pitcher"])
+        final_outings = qualified_outings_df[
+            qualified_outings_df["pitcher"].isin(qualified_pitchers)
+        ].copy()
+        excluded_outings = outing_stats[~qualified_outings_mask].copy()
+        cohort_excluded_outings = qualified_outings_df[
+            ~qualified_outings_df["pitcher"].isin(qualified_pitchers)
+        ].copy()
+        cohort_excluded_outings["outing_qualification_reason"] = "COHORT_INELIGIBLE_PRETEST"
+        self.last_excluded_outings = pd.concat(
+            [excluded_outings, cohort_excluded_outings], ignore_index=True
+        )
+        self.last_excluded_pitchers = cohort_audit[
+            ~cohort_audit["cohort_eligible"]
+        ].reset_index(drop=True)
         final_outing_keys = set(zip(final_outings["game_pk"], final_outings["pitcher"]))
 
         # Filter pitch-level dataset
@@ -133,8 +174,11 @@ class QualifyFilter:
 
         # 7. Mark Right-Censored Follow-up
         # If pitcher is removed with fewer than horizon_pas remaining, record incomplete follow-up
-        max_pa_dict = dict(zip(final_outings["game_pk"], final_outings["total_pas"]))
-        qualified_pitches["outing_total_pas"] = qualified_pitches["game_pk"].map(max_pa_dict)
+        max_pa_dict = final_outings.set_index(["game_pk", "pitcher"])["total_pas"].to_dict()
+        qualified_pitches["outing_total_pas"] = [
+            max_pa_dict.get((game_pk, pitcher), np.nan)
+            for game_pk, pitcher in zip(qualified_pitches["game_pk"], qualified_pitches["pitcher"])
+        ]
         qualified_pitches["is_censored"] = (qualified_pitches["outing_total_pas"] - qualified_pitches["pa_number_in_outing"]) < self.horizon_pas
 
         # 8. Identify Primary Pitch Types
@@ -154,6 +198,11 @@ class QualifyFilter:
         dim_pitchers["primary_pitch_types"] = dim_pitchers["pitcher"].map(lambda pid: ",".join(primary_pitch_map.get(pid, [])))
         total_start_counts = final_outings.groupby("pitcher").size().to_dict()
         dim_pitchers["qualified_starts"] = dim_pitchers["pitcher"].map(total_start_counts)
+        dim_pitchers = dim_pitchers.merge(
+            cohort_audit[["pitcher", "pretest_qualified_starts", "cohort_eligible",
+                          "cohort_eligibility_cutoff"]],
+            on="pitcher", how="left",
+        )
         if "actual_data_source" in qualified_pitches:
             source_map = qualified_pitches.groupby("pitcher")["actual_data_source"].first().to_dict()
             dim_pitchers["actual_data_source"] = dim_pitchers["pitcher"].map(source_map)

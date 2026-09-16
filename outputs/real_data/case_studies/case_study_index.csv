@@ -1,0 +1,5 @@
+case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,lead_time_pitches
+TP,776217,2025-09-23,592332,Kevin Gausman,mlb_statcast,80.0,82.0,2.0
+FP,776211,2025-09-23,657277,Logan Webb,mlb_statcast,82.0,,
+FN,776145,2025-09-28,592332,Kevin Gausman,mlb_statcast,,4.0,
+TN,776137,2025-09-28,657277,Logan Webb,mlb_statcast,,,

@@ -8,17 +8,35 @@ import pandas as pd
 
 
 TRAIN_END = pd.Timestamp("2023-12-31")
-VALIDATION_END = pd.Timestamp("2024-06-30")
+VALIDATION_END = pd.Timestamp("2024-12-31")
+TEST_START = pd.Timestamp("2025-01-01")
 
 
 def assign_temporal_split(df: pd.DataFrame) -> pd.DataFrame:
-    """Assign the documented 2023 train / early-2024 validation / late-2024 test split."""
+    """Assign the frozen primary protocol: 2023 train, 2024 validation, 2025 test."""
     result = df.copy()
     dates = pd.to_datetime(result["game_date"], errors="coerce")
     result["dataset_split"] = np.select(
-        [dates <= TRAIN_END, dates <= VALIDATION_END],
-        ["train", "validation"],
-        default="test",
+        [dates <= TRAIN_END, (dates > TRAIN_END) & (dates <= VALIDATION_END), dates >= TEST_START],
+        ["train", "validation", "test"],
+        default="unassigned",
+    )
+    result.loc[dates.isna(), "dataset_split"] = "unassigned"
+    return result
+
+
+def assign_historical_temporal_split(df: pd.DataFrame) -> pd.DataFrame:
+    """Preserve the earlier 2023 / early-2024 / late-2024 historical experiment."""
+    result = df.copy()
+    dates = pd.to_datetime(result["game_date"], errors="coerce")
+    result["dataset_split"] = np.select(
+        [
+            dates <= TRAIN_END,
+            (dates > TRAIN_END) & (dates <= pd.Timestamp("2024-06-30")),
+            (dates >= pd.Timestamp("2024-07-01")) & (dates <= pd.Timestamp("2024-12-31")),
+        ],
+        ["train", "validation", "test"],
+        default="unassigned",
     )
     result.loc[dates.isna(), "dataset_split"] = "unassigned"
     return result
@@ -223,3 +241,31 @@ def select_operating_threshold(
             best_threshold = float(threshold)
             best_metrics = metrics
     return best_threshold, best_metrics
+
+
+def threshold_tradeoff_curve(
+    df: pd.DataFrame,
+    episodes_df: Optional[pd.DataFrame],
+    score_col: str,
+    horizon_pitches: int = 15,
+    split: str = "validation",
+    candidates: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    """Evaluate every candidate threshold without selecting on test data."""
+    eligible = df.loc[eligible_pitch_mask(df, split)]
+    finite = eligible[score_col].replace([np.inf, -np.inf], np.nan).dropna()
+    if finite.empty:
+        return pd.DataFrame(columns=[
+            "threshold", "episode_recall", "warning_precision", "false_warnings_per_outing",
+        ])
+    if candidates is None:
+        candidates = np.unique(np.quantile(finite, np.linspace(0.0, 1.0, 31)))
+        candidates = np.r_[np.inf, candidates[::-1]]
+    rows = []
+    for threshold in candidates:
+        predictions = df[score_col].ge(threshold) & df[score_col].notna()
+        metrics, _, _ = evaluate_warning_predictions(
+            df, episodes_df, predictions, horizon_pitches=horizon_pitches, split=split
+        )
+        rows.append({"threshold": float(threshold), **metrics})
+    return pd.DataFrame(rows)

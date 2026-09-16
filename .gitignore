@@ -14,6 +14,8 @@ outputs/case_studies/*.png
 .env
 *.json
 !outputs/metrics_summary.json
+!outputs/real_data/*.json
+!outputs/simulation/*.json
 !gcp_key.example.json
 
 # OS files

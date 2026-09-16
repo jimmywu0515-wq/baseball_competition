@@ -19,6 +19,10 @@ from src.label_builder.collapse_labels import CollapseLabelBuilder
 from src.evaluation.metrics import EvaluationEngine
 from src.evaluation.baseline_comparator import BaselineComparator
 from src.evaluation.protocol import assign_temporal_split, evaluate_warning_predictions
+from src.evaluation.protocol import select_operating_threshold
+from src.storage.integrity import DataIntegrityError, PITCH_KEY, prepare_raw_pitch_data
+from src.configuration import load_project_config
+from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
 
 @pytest.fixture
 def sample_dataset():
@@ -127,9 +131,46 @@ def test_fair_shared_ground_truth(sample_dataset):
 
 
 def test_temporal_split_is_implemented():
-    df = pd.DataFrame({"game_date": ["2023-09-01", "2024-04-01", "2024-07-01"]})
+    df = pd.DataFrame({"game_date": ["2023-09-01", "2024-04-01", "2024-07-01", "2025-06-01"]})
     result = assign_temporal_split(df)
-    assert result["dataset_split"].tolist() == ["train", "validation", "test"]
+    assert result["dataset_split"].tolist() == ["train", "validation", "validation", "test"]
+
+
+def test_central_config_has_valid_baseline_window():
+    config = load_project_config()
+    assert config["baseline"]["min_prior_starts"] <= config["baseline"]["historical_window_starts"]
+    assert config["evaluation"]["test_start"] == "2025-01-01"
+
+
+def test_raw_integrity_requires_2025_and_rejects_conflicting_pitch_keys():
+    rows = []
+    for year in (2023, 2024, 2025):
+        rows.append({
+            "game_pk": year, "pitcher": 10, "at_bat_number": 1, "pitch_number": 1,
+            "game_date": f"{year}-06-01", "pitch_type": "FF", "release_speed": 95.0,
+            "release_pos_x": -2.0, "release_pos_z": 6.0, "release_extension": 6.5,
+            "release_spin_rate": 2400.0, "spin_axis": 210.0, "pfx_x": -0.5,
+            "pfx_z": 1.2, "actual_data_source": "mlb_statcast",
+            "game_type": "R",
+        })
+    clean = prepare_raw_pitch_data(
+        pd.concat([
+            pd.DataFrame(rows),
+            pd.DataFrame([{**rows[-1], "game_pk": 9999, "game_type": "P"}]),
+        ], ignore_index=True),
+        "mlb_statcast", "2023-01-01", "2025-12-31",
+        required_years=[2023, 2024, 2025],
+    )
+    assert set(clean["ingest_season"]) == {2023, 2024, 2025}
+    assert set(clean["game_type"]) == {"R"}
+    assert not clean.duplicated(PITCH_KEY).any()
+
+    conflicting = pd.concat([clean, clean.iloc[[0]].assign(release_speed=80.0)], ignore_index=True)
+    with pytest.raises(DataIntegrityError, match="Conflicting duplicate pitch keys"):
+        prepare_raw_pitch_data(
+            conflicting, "mlb_statcast", "2023-01-01", "2025-12-31",
+            required_years=[2023, 2024, 2025],
+        )
 
 
 def test_cusum_never_processes_calibration_or_unavailable_scores():
@@ -218,3 +259,214 @@ def test_label_builder_emits_dashboard_schema(sample_dataset):
     outing["pitch_number_in_outing"] = np.arange(1, len(outing) + 1)
     labeled, _ = CollapseLabelBuilder().build_labels_for_outing(outing)
     assert {"collapse_reason", "window_blended_xwoba"}.issubset(labeled.columns)
+
+
+def test_baseline_sources_precede_cutoff_and_future_games_cannot_change_earlier_outputs(sample_dataset):
+    features = compute_kinematics_and_vaa(sample_dataset.copy())
+    features = features.sort_values(["pitcher", "game_date", "game_pk", "at_bat_number", "pitch_number"])
+    features["pitch_number_in_outing"] = features.groupby(["game_pk", "pitcher"]).cumcount() + 1
+    builder = BaselineBuilder(historical_window_starts=4, min_prior_starts=1, min_pitches_for_baseline=10)
+    baseline_a, store_a = builder.build_baselines(features)
+    assert (
+        pd.to_datetime(baseline_a["baseline_max_source_date"])
+        < pd.to_datetime(baseline_a["as_of_date"])
+    ).all()
+
+    final_game = features.sort_values("game_date")["game_pk"].iloc[-1]
+    changed = features.copy()
+    changed.loc[changed["game_pk"].eq(final_game), "release_speed"] += 25.0
+    baseline_b, store_b = builder.build_baselines(changed)
+    before_final_a = baseline_a[baseline_a["as_of_game_pk"].ne(final_game)].sort_values(
+        ["pitcher", "as_of_game_pk", "pitch_type"]
+    ).reset_index(drop=True)
+    before_final_b = baseline_b[baseline_b["as_of_game_pk"].ne(final_game)].sort_values(
+        ["pitcher", "as_of_game_pk", "pitch_type"]
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(before_final_a, before_final_b)
+
+    candidate_game = next(
+        game for game in features["game_pk"].drop_duplicates()
+        if game != final_game and any(
+            key.startswith(f"{features.loc[features['game_pk'].eq(game), 'pitcher'].iloc[0]}_{game}_")
+            and value.get("status") == "QUALIFIED" for key, value in store_a.items()
+        )
+    )
+    outing = features[features["game_pk"].eq(candidate_game)]
+    pitcher = int(outing["pitcher"].iloc[0])
+    calibrator = ShrinkageCalibrator(intra_game_calibration_pitches=20)
+    calibrated_a, means_a = calibrator.calibrate_outing_pitches(
+        outing, pitcher, candidate_game, store_a
+    )
+    calibrated_b, means_b = calibrator.calibrate_outing_pitches(
+        outing, pitcher, candidate_game, store_b
+    )
+    scored_a = MahalanobisScorer().score_pitches(
+        calibrated_a, pitcher, candidate_game, store_a, means_a
+    )
+    scored_b = MahalanobisScorer().score_pitches(
+        calibrated_b, pitcher, candidate_game, store_b, means_b
+    )
+    np.testing.assert_allclose(
+        scored_a["mahalanobis_calibrated"], scored_b["mahalanobis_calibrated"], equal_nan=True
+    )
+    warnings_a, _ = CUSUMDetector().detect_game_alerts(scored_a)
+    warnings_b, _ = CUSUMDetector().detect_game_alerts(scored_b)
+    pd.testing.assert_series_equal(warnings_a["is_cusum_alert"], warnings_b["is_cusum_alert"])
+
+
+def test_outcome_columns_cannot_change_mechanics_scores_or_warning_times():
+    feature_columns = [
+        "release_pos_x", "release_pos_z", "release_extension", "release_speed",
+        "release_spin_rate", "spin_axis_cos", "spin_axis_sin", "pfx_x", "pfx_z", "vaa",
+    ]
+    rows = []
+    for pitch in range(1, 41):
+        row = {
+            "game_pk": 1, "game_date": "2025-05-01", "pitcher": 10,
+            "pitcher_name": "Pitcher", "pitch_type": "FF", "inning": 1,
+            "pitch_number_in_outing": pitch, "is_calibration_phase": pitch <= 20,
+            "y_true_onset_in_horizon": False, "collapse_reason": "NONE",
+        }
+        row.update({column: 1.0 + pitch / 100.0 for column in feature_columns})
+        rows.append(row)
+    outing = pd.DataFrame(rows)
+    baseline = {
+        "10_1_FF": {
+            "status": "QUALIFIED", "mu_vec": np.ones(10), "sigma_vec": np.ones(10),
+            "prec_mat": np.eye(10), "feature_cols": feature_columns,
+        }
+    }
+    means = {"FF": np.ones(10)}
+    changed = outing.copy()
+    changed["y_true_onset_in_horizon"] = True
+    changed["collapse_reason"] = "ALTERED_FUTURE_OUTCOME"
+    score_a = MahalanobisScorer().score_pitches(outing, 10, 1, baseline, means)
+    score_b = MahalanobisScorer().score_pitches(changed, 10, 1, baseline, means)
+    np.testing.assert_allclose(
+        score_a["mahalanobis_calibrated"], score_b["mahalanobis_calibrated"], equal_nan=True
+    )
+    detected_a, alerts_a = CUSUMDetector().detect_game_alerts(score_a)
+    detected_b, alerts_b = CUSUMDetector().detect_game_alerts(score_b)
+    pd.testing.assert_series_equal(detected_a["is_cusum_alert"], detected_b["is_cusum_alert"])
+    pd.testing.assert_frame_equal(alerts_a, alerts_b)
+
+
+def test_test_data_cannot_change_validation_selected_threshold():
+    rows = []
+    for split, game_pk, scores in (
+        ("validation", 1, [0.1, 0.2, 0.8, 0.9]),
+        ("test", 2, [0.3, 0.4, 0.5, 0.6]),
+    ):
+        for offset, score in enumerate(scores, start=21):
+            rows.append({
+                "game_pk": game_pk, "pitcher": 10, "game_date": "2024-05-01" if split == "validation" else "2025-05-01",
+                "dataset_split": split, "pitch_number_in_outing": offset,
+                "pa_number_in_outing": offset // 4, "score_available": True,
+                "is_censored_followup": False, "score": score,
+                "y_true_onset_in_horizon": offset >= 23,
+            })
+    frame = pd.DataFrame(rows)
+    episodes = pd.DataFrame({
+        "game_pk": [1, 2], "pitcher": [10, 10], "episode_id": [1, 2],
+        "onset_pitch": [25, 25], "onset_pa": [7, 7],
+        "dataset_split": ["validation", "test"],
+    })
+    threshold_a, _ = select_operating_threshold(frame, episodes, "score", 1.0)
+    changed = frame.copy()
+    changed.loc[changed["dataset_split"].eq("test"), ["score", "y_true_onset_in_horizon"]] = [999.0, False]
+    threshold_b, _ = select_operating_threshold(changed, episodes, "score", 1.0)
+    assert threshold_a == threshold_b
+
+
+def test_test_rows_cannot_change_contextual_model_fitted_on_train():
+    rows = []
+    for position in range(12):
+        is_train = position < 8
+        rows.append({
+            "game_pk": 1 if is_train else 2,
+            "pitcher": 10,
+            "game_date": "2023-06-01" if is_train else "2025-06-01",
+            "dataset_split": "train" if is_train else "test",
+            "pitch_number_in_outing": 21 + position,
+            "pa_number_in_outing": 6 + position,
+            "inning": 3 + position // 3,
+            "score_available": True,
+            "is_censored_followup": False,
+            "y_true_onset_in_horizon": bool(position % 2),
+        })
+    frame = pd.DataFrame(rows)
+    comparator = BaselineComparator()
+    scores_a = comparator._add_context_scores(frame)
+    changed = frame.copy()
+    test_mask = changed["dataset_split"].eq("test")
+    changed.loc[test_mask, "pitch_number_in_outing"] = 999
+    changed.loc[test_mask, "pa_number_in_outing"] = 999
+    changed.loc[test_mask, "inning"] = 9
+    changed.loc[test_mask, "y_true_onset_in_horizon"] = False
+    scores_b = comparator._add_context_scores(changed)
+    np.testing.assert_allclose(scores_a[~test_mask], scores_b[~test_mask])
+
+
+def test_pitch_mix_changes_do_not_change_pitch_type_normalized_cusum_rate():
+    feature_columns = [
+        "release_pos_x", "release_pos_z", "release_extension", "release_speed",
+        "release_spin_rate", "spin_axis_cos", "spin_axis_sin", "pfx_x", "pfx_z", "vaa",
+    ]
+    baseline_store = {}
+    calibrated_means = {}
+    for game_pk in (1, 2):
+        for pitch_type in ("FF", "SL"):
+            baseline_store[f"10_{game_pk}_{pitch_type}"] = {
+                "status": "QUALIFIED", "mu_vec": np.zeros(10), "sigma_vec": np.ones(10),
+                "prec_mat": np.eye(10), "feature_cols": feature_columns,
+            }
+            calibrated_means[(game_pk, pitch_type)] = np.zeros(10)
+
+    alert_rates = []
+    for game_pk, ff_fraction in ((1, 0.5), (2, 0.9)):
+        rows = []
+        for pitch in range(21, 121):
+            pitch_type = "FF" if (pitch - 21) < 100 * ff_fraction else "SL"
+            row = {
+                "game_pk": game_pk, "game_date": "2025-06-01", "pitcher": 10,
+                "pitcher_name": "Pitcher", "pitch_type": pitch_type, "inning": 1,
+                "pitch_number_in_outing": pitch, "is_calibration_phase": False,
+            }
+            row.update({column: 0.5 for column in feature_columns})
+            rows.append(row)
+        outing = pd.DataFrame(rows)
+        scored = MahalanobisScorer().score_pitches(
+            outing, 10, game_pk, baseline_store,
+            {pitch_type: calibrated_means[(game_pk, pitch_type)] for pitch_type in ("FF", "SL")},
+        )
+        detected, _ = CUSUMDetector().detect_game_alerts(scored)
+        alert_rates.append(detected["is_cusum_alert"].mean())
+    assert alert_rates[0] == alert_rates[1]
+
+
+def test_paired_bootstrap_reports_direct_differences_and_zero_denominators():
+    rows = []
+    for game_pk in (1, 2, 3):
+        for pitch in range(21, 41):
+            rows.append({
+                "game_pk": game_pk, "pitcher": 10 + game_pk % 2,
+                "game_date": "2025-06-01", "dataset_split": "test",
+                "pitch_number_in_outing": pitch, "pa_number_in_outing": pitch // 4,
+                "score_available": True, "is_censored_followup": False,
+                "y_true_onset_in_horizon": pitch >= 25,
+                "is_proposed_operating_alert": pitch in (22, 23),
+                "is_contextual_operating_alert": game_pk == 1 and pitch in (22, 23),
+            })
+    frame = pd.DataFrame(rows)
+    episodes = pd.DataFrame({
+        "game_pk": [1, 2, 3], "pitcher": [11, 10, 11], "episode_id": [1, 2, 3],
+        "onset_pitch": [30, 30, 30], "onset_pa": [8, 8, 8],
+        "dataset_split": ["test", "test", "test"],
+    })
+    result = paired_bootstrap_confidence_intervals(
+        frame, episodes,
+        {"proposed": "is_proposed_operating_alert", "contextual": "is_contextual_operating_alert"},
+        n_bootstrap=100, seed=7,
+    )
+    assert "proposed_minus_contextual" in set(result["comparison"])
+    assert result["zero_denominator_frequency"].between(0, 1).all()
