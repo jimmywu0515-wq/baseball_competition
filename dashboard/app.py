@@ -405,7 +405,7 @@ with tab3:
     threshold_plot = result_dir / "validation_threshold_tradeoffs.png"
     if threshold_plot.exists():
         st.subheader("Validation threshold trade-offs")
-        st.image(str(threshold_plot), use_column_width=True)
+        st.image(str(threshold_plot), use_container_width=True)
 
     lead_path = result_dir / "lead_time_sensitivity.csv"
     if lead_path.exists():
@@ -475,7 +475,7 @@ with tab4:
                 img_path = fp
                 break
         if img_path:
-            st.image(str(img_path), use_column_width=True)
+            st.image(str(img_path), use_container_width=True)
         else:
             st.info("Case study image not found. Run `scripts/run_full_pipeline.py` to generate case studies.")
         st.markdown("---")
