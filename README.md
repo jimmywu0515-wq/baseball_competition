@@ -18,17 +18,18 @@ Important disclosure: exploratory 2025 metrics were generated in this workspace 
 
 ## Eligibility and live-use limitation
 
-The 2025 pitcher cohort is fixed using qualified outings completed by December 31, 2024. A pitcher needs 10 pre-test qualified starts. Starts completed during 2025 cannot determine cohort inclusion.
+The expanded cohort is fixed without using 2025 performance. The six original pitchers are retained, and 34 additional pitchers are selected with a recorded seed from players who made at least 30 MLB starts across 2023–2024. The downstream qualifier still requires 10 pre-test outings of at least 50 pitches. Starts completed during 2025 cannot determine selection or qualification.
 
 The centralized settings in `config/config.yaml` are:
 
 - at least 50 pitches in a qualified outing;
+- a preselected cohort of 40 pitchers based only on 2023–2024 MLB records;
 - 10 pre-test qualified starts for cohort membership;
 - at least five completed prior starts before mechanics scoring;
 - a rolling historical window of at most 12 prior starts; and
 - at least 40 complete observations for a pitcher × pitch-type baseline.
 
-The minimum prior starts is validated not to exceed the historical window. Cohort eligibility is separate from outing eligibility and pitch-type baseline sufficiency. Excluded pitchers, excluded outings, and unavailable score reasons are exported.
+The minimum prior starts is validated not to exceed the historical window. Cohort eligibility is separate from outing eligibility and pitch-type baseline sufficiency. The complete selection pool, selection reason, seed, pitcher-season ingestion status, excluded pitchers, excluded outings, and unavailable score reasons are exported.
 
 The ≥50-pitch outing filter is retrospective: final outing length is unknown during live prediction. Therefore, reported results apply to retrospectively qualified starter outings and do not directly establish live performance for short starts, openers, or relief appearances.
 
@@ -60,13 +61,13 @@ The velocity benchmark calculates four-seamer (`FF`), sinker (`SI`), and cutter 
 
 Paired bootstrap intervals resample complete 2025 outings and use the identical sampled outings for every model. Frozen thresholds are never reselected within bootstrap samples. The output reports 95% intervals for episode recall, warning precision, false warnings per outing, risk ratio, and direct proposed-minus-comparator differences. Zero-denominator replicate frequency is reported explicitly.
 
-A pitcher-clustered sensitivity analysis resamples pitchers and includes all their outings. Because the cohort contains few pitchers, those intervals can be unstable and should be interpreted cautiously.
+A pitcher-clustered sensitivity analysis resamples pitchers and includes all their outings. Per-pitcher results are exported so pooled performance can be checked for dependence on a few pitchers.
 
 The fixed-warning lead-time experiment holds scores, thresholds, and warning times constant while changing only the match horizon across 10, 15, 20, and 25 pitches. It reports follow-up coverage, censoring, a common-follow-up comparison, matched warning–episode records, and lead-time distributions. Improved recall under a wider window alone is not proof of earlier predictive value.
 
 ## Provenance and warehouse integrity
 
-Every persisted result records its actual source (`mlb_statcast` or `simulation_benchmark`). Real-data retrieval is strict: any failed or empty pitcher-season segment aborts publication. Simulation is available only through explicit `use_real_data=False` mode.
+Every persisted result records its actual source (`mlb_statcast` or `simulation_benchmark`). Real-data retrieval is strict: a failed segment aborts publication. A zero-row pitcher-season is accepted only when the official MLB season record independently confirms that the pitcher threw no regular-season pitches. Simulation is available only through explicit `use_real_data=False` mode.
 
 Before publication, the pipeline checks requested seasons, source consistency, regular-season scope, pitch-key uniqueness, raw-to-qualified referential integrity, gold fact alignment, and 2025 test assignment. DuckDB tables and Parquet files are replaced atomically and reloaded for a second audit.
 
@@ -85,6 +86,7 @@ python -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest tests -v
+python scripts/prepare_expanded_cohort.py
 python scripts/run_full_pipeline.py
 python scripts/audit_warehouse.py
 streamlit run dashboard/app.py
@@ -97,6 +99,75 @@ from scripts.run_full_pipeline import run_pipeline
 run_pipeline(use_real_data=False)
 ```
 
+## Run on GCP from GitHub
+
+The cloud path uses two manual Cloud Run Jobs so a long evaluation does not
+lose the expensive Statcast download. `baseball-prepare` freezes the cohort,
+downloads/validates every pitcher-season, and checkpoints the raw cache in GCS.
+`baseball-evaluate` restores that checkpoint, runs the canonical pipeline,
+performs the warehouse integrity audit, and publishes Parquet results to GCS
+and tables to BigQuery. Cloud publishing is strict: a failed GCS or BigQuery
+write fails the job rather than silently claiming success.
+
+In Google Cloud Shell, select the free-trial project and pull this repository:
+
+```bash
+gcloud config set project YOUR_PROJECT_ID
+git clone https://github.com/jimmywu0515-wq/baseball_competition.git
+cd baseball_competition
+bash scripts/deploy_gcp.sh
+```
+
+Deployment does not start compute. Run the stages explicitly, in order:
+
+```bash
+gcloud run jobs execute baseball-prepare --region=us-central1 --wait
+gcloud run jobs execute baseball-evaluate --region=us-central1 --wait
+```
+
+Or deploy and execute both with `bash scripts/deploy_gcp.sh --run`. The prepare
+job is resumable and subsequent executions reuse validated GCS cache objects.
+The evaluation job is capped at one task, zero retries, 2 vCPU, 8 GiB, and six
+hours to bound accidental spend. This uses free-trial credits; it is not
+guaranteed to remain inside every GCP free-tier allowance. Configure a billing
+budget/alert before the first run, and do not add a schedule while experimenting.
+
+Useful checks:
+
+```bash
+gcloud run jobs executions list --job=baseball-evaluate --region=us-central1
+gcloud storage ls gs://YOUR_PROJECT_ID-baseball-lakehouse/results/real_data/
+bq ls YOUR_PROJECT_ID:baseball_analytics
+```
+
+## Current status and work still required
+
+The expanded cohort selection and ingestion have been completed locally: 40
+pitchers were selected using only 2023–2024 records, all 40 passed the downstream
+qualification rule, and 267,983 raw pitches were cached across 115 loaded
+pitcher-season segments plus five independently verified empty segments. The
+selection and segment audits are committed under `outputs/cohort_expansion/`.
+
+The following work is still required before claiming final expanded-cohort
+performance:
+
+1. Deploy the two Cloud Run Jobs in an actual GCP free-trial project and verify
+   its project IAM, Artifact Registry build, GCS checkpoint, and BigQuery loads.
+   The repository contains the deployment code, but this workspace does not have
+   access to the user's GCP account and therefore cannot perform that verification.
+2. Execute `baseball-prepare`, then `baseball-evaluate`, and allow the complete
+   40-pitcher evaluation, bootstrap, ablation, sensitivity, and integrity audit to
+   finish. The earlier local attempt was stopped before final publication because
+   threshold/event evaluation was too slow; warning-event construction has since
+   been vectorized, but the complete expanded run has not yet been timed end to end.
+3. Review `warehouse_integrity_report`, the cohort/segment audits, test-pitcher
+   coverage, and BigQuery row counts before accepting the new outputs.
+4. Replace any previously published six-pitcher metrics only after that successful
+   run. Existing result files are not evidence of 40-pitcher performance.
+
+Until these steps finish, describe the repository as GCP-ready and the expanded
+data as ingested—not as a completed 40-pitcher validation result.
+
 ## Main modules
 
 - `src/configuration.py`: centralized configuration validation
@@ -108,3 +179,5 @@ run_pipeline(use_real_data=False)
 - `src/evaluation/lead_time.py`: fixed-warning horizon sensitivity
 - `scripts/run_full_pipeline.py`: canonical local pipeline
 - `scripts/run_cloud_elt.py`: canonical pipeline plus cloud publication
+- `scripts/cloud_entrypoint.py`: durable prepare/evaluate stage controller
+- `scripts/deploy_gcp.sh`: one-command GCP infrastructure and Cloud Run deployment

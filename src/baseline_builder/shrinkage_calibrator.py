@@ -70,31 +70,26 @@ class ShrinkageCalibrator:
 
             calibrated_means[pt] = mu_calib
 
-        # Add z-scores and calibrated deltas
-        for col_idx, col_name in enumerate(FEATURE_COLS):
-            z_col = f"z_{col_name}"
-            calib_col = f"calib_delta_{col_name}"
-
-            def compute_z(row):
-                pt = row["pitch_type"]
-                base = baseline_store.get(f"{pitcher_id}_{game_pk}_{pt}")
-                if base and base.get("status") == "QUALIFIED" and not np.isnan(row.get(col_name, np.nan)):
-                    mu = base["mu_vec"][col_idx]
-                    sig = max(base["sigma_vec"][col_idx], 1e-4)
-                    return (row[col_name] - mu) / sig
-                return np.nan
-
-            def compute_calib_delta(row):
-                # Calibration deltas are only meaningful post-calibration (pitch 21+)
-                if row["is_calibration_phase"]:
-                    return np.nan
-                pt = row["pitch_type"]
-                if pt in calibrated_means and not np.isnan(row.get(col_name, np.nan)):
-                    mu_c = calibrated_means[pt][col_idx]
-                    return row[col_name] - mu_c
-                return np.nan
-
-            df[z_col] = df.apply(compute_z, axis=1).round(4)
-            df[calib_col] = df.apply(compute_calib_delta, axis=1).round(4)
+        # Allocate once, then score complete pitch-type blocks with numpy. This
+        # is mathematically identical to the row-wise implementation and scales
+        # to full MLB cohorts without millions of Python callbacks.
+        z_cols = [f"z_{name}" for name in FEATURE_COLS]
+        delta_cols = [f"calib_delta_{name}" for name in FEATURE_COLS]
+        df[z_cols + delta_cols] = np.nan
+        for pt, mu_calib in calibrated_means.items():
+            mask = df["pitch_type"].eq(pt)
+            base = baseline_store[f"{pitcher_id}_{game_pk}_{pt}"]
+            values = df.loc[mask, FEATURE_COLS].apply(pd.to_numeric, errors="coerce").to_numpy(float)
+            sigma = np.maximum(np.asarray(base["sigma_vec"], dtype=float), 1e-4)
+            df.loc[mask, z_cols] = np.round(
+                (values - np.asarray(base["mu_vec"], dtype=float)) / sigma, 4
+            )
+            post_mask = mask & ~df["is_calibration_phase"]
+            post_values = df.loc[post_mask, FEATURE_COLS].apply(
+                pd.to_numeric, errors="coerce"
+            ).to_numpy(float)
+            df.loc[post_mask, delta_cols] = np.round(
+                post_values - np.asarray(mu_calib, dtype=float), 4
+            )
 
         return df, calibrated_means

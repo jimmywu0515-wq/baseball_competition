@@ -1,56 +1,90 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# GCP Deployment Script for Baseball Lakehouse & Dashboard
-PROJECT_ID=${GCP_PROJECT_ID:-"project-f677f84f-db22-4976-96b"}
-REGION=${GCP_REGION:-"us-central1"}
-BUCKET_NAME=${GCS_BUCKET_NAME:-"baseball-lakehouse-f677f84f"}
-DATASET_NAME=${BIGQUERY_DATASET:-"baseball_analytics"}
-SERVICE_NAME="baseball-fatigue-dashboard"
+# Run this from Google Cloud Shell after cloning/pulling the GitHub repository.
+# It deploys manual-only jobs; add --run to execute prepare followed by evaluate.
+RUN_JOBS=0
+if [[ "${1:-}" == "--run" ]]; then
+  RUN_JOBS=1
+elif [[ $# -gt 0 ]]; then
+  echo "Usage: bash scripts/deploy_gcp.sh [--run]" >&2
+  exit 2
+fi
 
-echo "========================================================"
-echo "Deploying Baseball Fatigue System to GCP"
-echo "Project ID: $PROJECT_ID | Region: $REGION | Bucket: $BUCKET_NAME"
-echo "========================================================"
+PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
+REGION="${GCP_REGION:-us-central1}"
+DATASET_ID="${BIGQUERY_DATASET:-baseball_analytics}"
+BUCKET_NAME="${GCS_BUCKET_NAME:-${PROJECT_ID}-baseball-lakehouse}"
+REPOSITORY="${ARTIFACT_REPOSITORY:-baseball-pipeline}"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/pipeline:latest"
+SERVICE_ACCOUNT_NAME="baseball-pipeline-runner"
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-# 1. Set default project
-gcloud config set project "$PROJECT_ID"
+if [[ -z "${PROJECT_ID}" || "${PROJECT_ID}" == "(unset)" ]]; then
+  echo "Select a project first: gcloud config set project YOUR_PROJECT_ID" >&2
+  exit 2
+fi
 
-# 2. Enable GCP Services
-echo "Enabling Google Cloud APIs..."
+echo "Deploying to project=${PROJECT_ID}, region=${REGION}, bucket=${BUCKET_NAME}"
 gcloud services enable \
-    bigquery.googleapis.com \
-    storage.googleapis.com \
-    run.googleapis.com \
-    artifactregistry.googleapis.com \
-    cloudbuild.googleapis.com \
-    --project="$PROJECT_ID"
+  run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
+  storage.googleapis.com bigquery.googleapis.com --project="${PROJECT_ID}"
 
-# 3. Create GCS Bucket for Parquet Lakehouse
-echo "Creating GCS Bucket if not exists..."
-gcloud storage buckets create "gs://$BUCKET_NAME" \
-    --project="$PROJECT_ID" \
-    --location="$REGION" \
-    --uniform-bucket-level-access 2>/dev/null || echo "Bucket gs://$BUCKET_NAME already exists."
+if ! gcloud artifacts repositories describe "${REPOSITORY}" \
+  --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud artifacts repositories create "${REPOSITORY}" --repository-format=docker \
+    --location="${REGION}" --project="${PROJECT_ID}"
+fi
 
-# 4. Create BigQuery Dataset & Tables
-echo "Initializing BigQuery Dataset and Tables..."
-bq --location="$REGION" mk --dataset --default_table_expiration 0 "$PROJECT_ID:$DATASET_NAME" 2>/dev/null || echo "Dataset $DATASET_NAME exists."
-bq query --use_legacy_sql=false --project_id="$PROJECT_ID" < "$(dirname "$0")/init_bigquery.sql"
+if ! gcloud storage buckets describe "gs://${BUCKET_NAME}" \
+  --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud storage buckets create "gs://${BUCKET_NAME}" --project="${PROJECT_ID}" \
+    --location="${REGION}" --uniform-bucket-level-access
+fi
 
-# 5. Build and Deploy Cloud Run Service
-echo "Building and Deploying Coach Dashboard to Cloud Run..."
-gcloud run deploy "$SERVICE_NAME" \
-    --source=. \
-    --project="$PROJECT_ID" \
-    --region="$REGION" \
-    --platform=managed \
-    --allow-unauthenticated \
-    --port=8080 \
-    --memory=2Gi \
-    --timeout=300 \
-    --set-env-vars="GCP_PROJECT_ID=$PROJECT_ID,GCS_BUCKET_NAME=$BUCKET_NAME,BIGQUERY_DATASET=$DATASET_NAME"
+if ! bq --project_id="${PROJECT_ID}" show --dataset \
+  "${PROJECT_ID}:${DATASET_ID}" >/dev/null 2>&1; then
+  bq --project_id="${PROJECT_ID}" --location="US" mk --dataset "${DATASET_ID}"
+fi
 
-echo "========================================================"
-echo "Deployment Completed Successfully!"
-echo "========================================================"
+if ! gcloud iam service-accounts describe "${SERVICE_ACCOUNT}" \
+  --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  gcloud iam service-accounts create "${SERVICE_ACCOUNT_NAME}" \
+    --display-name="Baseball pipeline Cloud Run jobs" --project="${PROJECT_ID}"
+fi
+
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT}" --role="roles/storage.objectAdmin" \
+  --project="${PROJECT_ID}" >/dev/null
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT}" --role="roles/bigquery.dataEditor" >/dev/null
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${SERVICE_ACCOUNT}" --role="roles/bigquery.jobUser" >/dev/null
+
+gcloud builds submit --project="${PROJECT_ID}" --tag="${IMAGE}" .
+
+COMMON_ENV="GCP_PROJECT_ID=${PROJECT_ID},GCS_BUCKET_NAME=${BUCKET_NAME},BIGQUERY_DATASET=${DATASET_ID},PYTHONUNBUFFERED=1"
+gcloud run jobs deploy baseball-prepare \
+  --image="${IMAGE}" --region="${REGION}" --project="${PROJECT_ID}" \
+  --command=python --args=scripts/cloud_entrypoint.py \
+  --service-account="${SERVICE_ACCOUNT}" --tasks=1 --parallelism=1 \
+  --cpu=1 --memory=4Gi --task-timeout=7200s --max-retries=1 \
+  --set-env-vars="${COMMON_ENV},PIPELINE_STAGE=prepare"
+
+gcloud run jobs deploy baseball-evaluate \
+  --image="${IMAGE}" --region="${REGION}" --project="${PROJECT_ID}" \
+  --command=python --args=scripts/cloud_entrypoint.py \
+  --service-account="${SERVICE_ACCOUNT}" --tasks=1 --parallelism=1 \
+  --cpu=2 --memory=8Gi --task-timeout=21600s --max-retries=0 \
+  --set-env-vars="${COMMON_ENV},PIPELINE_STAGE=evaluate,OMP_NUM_THREADS=2,OPENBLAS_NUM_THREADS=2,MKL_NUM_THREADS=2"
+
+echo "Deployment complete. These jobs run only when explicitly executed."
+echo "Prepare:  gcloud run jobs execute baseball-prepare --region=${REGION} --wait"
+echo "Evaluate: gcloud run jobs execute baseball-evaluate --region=${REGION} --wait"
+
+if [[ "${RUN_JOBS}" -eq 1 ]]; then
+  gcloud run jobs execute baseball-prepare --region="${REGION}" \
+    --project="${PROJECT_ID}" --wait
+  gcloud run jobs execute baseball-evaluate --region="${REGION}" \
+    --project="${PROJECT_ID}" --wait
+fi

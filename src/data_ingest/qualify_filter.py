@@ -84,7 +84,7 @@ class QualifyFilter:
             # No fallback for outings that begin after inning one: those are
             # relief appearances, not starters, in pitcher-scoped Statcast data.
 
-        df["is_starter"] = df.apply(lambda r: (r["game_pk"], r["pitcher"]) in starter_keys, axis=1)
+        df["is_starter"] = pd.MultiIndex.from_frame(df[["game_pk", "pitcher"]]).isin(starter_keys)
         df_sp = df[df["is_starter"]].copy()
 
         # 4. Compute accurate Outing-Level Sequence Counters per (game_pk, pitcher)
@@ -169,7 +169,7 @@ class QualifyFilter:
 
         # Filter pitch-level dataset
         qualified_pitches = df_sp[
-            df_sp.apply(lambda r: (r["game_pk"], r["pitcher"]) in final_outing_keys, axis=1)
+            pd.MultiIndex.from_frame(df_sp[["game_pk", "pitcher"]]).isin(final_outing_keys)
         ].copy()
 
         # 7. Mark Right-Censored Follow-up
@@ -190,9 +190,14 @@ class QualifyFilter:
         for p_id, grp in top_pitches.groupby("pitcher"):
             primary_pitch_map[p_id] = grp["pitch_type"].tolist()
 
-        qualified_pitches["is_primary_pitch_type"] = qualified_pitches.apply(
-            lambda r: r["pitch_type"] in primary_pitch_map.get(r["pitcher"], []), axis=1
-        )
+        primary_pairs = {
+            (pitcher, pitch_type)
+            for pitcher, pitch_types in primary_pitch_map.items()
+            for pitch_type in pitch_types
+        }
+        qualified_pitches["is_primary_pitch_type"] = pd.MultiIndex.from_frame(
+            qualified_pitches[["pitcher", "pitch_type"]]
+        ).isin(primary_pairs)
 
         dim_pitchers = qualified_pitches[["pitcher", "pitcher_name", "p_throws"]].drop_duplicates().copy()
         dim_pitchers["primary_pitch_types"] = dim_pitchers["pitcher"].map(lambda pid: ",".join(primary_pitch_map.get(pid, [])))

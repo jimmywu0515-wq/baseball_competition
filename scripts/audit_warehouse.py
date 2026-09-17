@@ -52,6 +52,7 @@ def main() -> None:
         "fact_matched_warning_episodes", "mart_lead_time_distribution",
         "mart_missing_data_summary", "audit_excluded_pitchers", "audit_excluded_outings",
         "audit_unavailable_scores",
+        "audit_cohort_selection", "audit_ingestion_segments", "mart_pitcher_model_evaluation",
     }
     persisted_tables = set(connection.execute("SHOW TABLES").fetchdf()["name"])
     missing_tables = sorted(expected_tables - persisted_tables)

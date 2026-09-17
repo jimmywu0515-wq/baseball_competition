@@ -31,10 +31,15 @@ def render_validation_report(output_dir: Path) -> Path:
     ablations = _read_csv(output_dir, "ablation_results.csv")
     sensitivity = _read_csv(output_dir, "sensitivity_results.csv")
     case_index = _read_csv(output_dir / "case_studies", "case_study_index.csv")
+    cohort_selection = _read_csv(output_dir, "cohort_selection.csv")
+    ingestion_segments = _read_csv(output_dir, "ingestion_segments.csv")
+    pitcher_evaluation = _read_csv(output_dir, "pitcher_model_evaluation.csv")
 
     unavailable_count = int(unavailable["pitch_count"].sum()) if "pitch_count" in unavailable else 0
     accounting = pd.DataFrame([{
         "cohort_pitchers": metrics.get("cohort_size"),
+        "preselected_pitchers": metrics.get("preselected_pitchers_count"),
+        "test_pitchers": metrics.get("test_pitchers_count"),
         "qualified_outings_all_seasons": metrics.get("qualified_outings"),
         "qualified_pitches_all_seasons": metrics.get("qualified_pitches"),
         "test_evaluated_outings": metrics.get("evaluated_outings_count"),
@@ -70,13 +75,19 @@ def render_validation_report(output_dir: Path) -> Path:
         "- Every model uses the same eligible observations and a 2024-selected threshold under "
         "the 0.5 false-warnings-per-outing ceiling.\n"
         "- Wider matching windows can mechanically increase recall and are not, alone, evidence of earlier prediction.\n"
-        "- Pitcher-clustered intervals use six pitchers and should be interpreted cautiously.\n\n"
+        f"- Pitcher-clustered intervals use {metrics.get('test_pitchers_count', 'the test')} pitchers.\n\n"
         "## Dataset accounting\n\n" + _markdown(accounting) +
+        "\n\n## Pre-test cohort selection\n\n" + _markdown(
+            cohort_selection[cohort_selection["selected"]].copy()
+            if "selected" in cohort_selection else cohort_selection
+        ) +
+        "\n\n## Ingestion segment audit\n\n" + _markdown(ingestion_segments) +
         "\n\n## Excluded outings by reason\n\n" + _markdown(exclusion_summary, "No outings were excluded.") +
         "\n\n## Unavailable scores by reason\n\n" + _markdown(unavailable_summary) +
         "\n\n## Missing-data summary\n\n" + _markdown(missingness) +
         "\n\n## Warehouse integrity\n\n" + _markdown(integrity) +
         "\n\n## Frozen 2025 model comparison\n\n" + _markdown(comparison) +
+        "\n\n## Frozen 2025 results by pitcher\n\n" + _markdown(pitcher_evaluation) +
         "\n\n## Paired bootstrap confidence intervals\n\n" + _markdown(bootstrap) +
         "\n\n## Fixed-warning lead-time sensitivity\n\n" + _markdown(lead_time) +
         "\n\n## Historical July-December 2024 experiment\n\n" + _markdown(historical) +

@@ -75,24 +75,41 @@ def warning_events(df: pd.DataFrame, predictions: pd.Series) -> pd.DataFrame:
         "game_pk", "pitcher", "warning_pitch", "warning_pa", "game_date",
         "dataset_split", "actual_data_source",
     ]
-    rows = []
-    pred = predictions.reindex(df.index).fillna(False).astype(bool)
-    for (game_pk, pitcher), group in df.groupby(["game_pk", "pitcher"], sort=False):
-        group = group.sort_values("pitch_number_in_outing")
-        group_pred = pred.loc[group.index]
-        starts = group_pred & ~group_pred.shift(fill_value=False)
-        for idx in group.index[starts]:
-            row = group.loc[idx]
-            rows.append({
-                "game_pk": game_pk,
-                "pitcher": pitcher,
-                "warning_pitch": int(row["pitch_number_in_outing"]),
-                "warning_pa": int(row.get("pa_number_in_outing", 0)),
-                "game_date": row.get("game_date"),
-                "dataset_split": row.get("dataset_split"),
-                "actual_data_source": row.get("actual_data_source", "unknown"),
-            })
-    return pd.DataFrame(rows, columns=columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    # This function is called for every threshold and every bootstrap model.
+    # Keep the exact index-aligned semantics while avoiding a Python loop over
+    # every outing and warning.
+    work = df.copy()
+    work["_prediction"] = predictions.reindex(df.index).fillna(False).astype(bool).to_numpy()
+    work = work.sort_values(
+        ["game_pk", "pitcher", "pitch_number_in_outing"], kind="stable"
+    )
+    previous = work.groupby(["game_pk", "pitcher"], sort=False)["_prediction"].shift(
+        fill_value=False
+    )
+    starts = work["_prediction"] & ~previous
+    warnings = work.loc[starts].copy()
+    if warnings.empty:
+        return pd.DataFrame(columns=columns)
+
+    warnings["warning_pitch"] = pd.to_numeric(
+        warnings["pitch_number_in_outing"], errors="raise"
+    ).astype(int)
+    if "pa_number_in_outing" in warnings:
+        warnings["warning_pa"] = pd.to_numeric(
+            warnings["pa_number_in_outing"], errors="coerce"
+        ).fillna(0).astype(int)
+    else:
+        warnings["warning_pa"] = 0
+    if "game_date" not in warnings:
+        warnings["game_date"] = pd.NaT
+    if "dataset_split" not in warnings:
+        warnings["dataset_split"] = None
+    if "actual_data_source" not in warnings:
+        warnings["actual_data_source"] = "unknown"
+    return warnings[columns].reset_index(drop=True)
 
 
 def evaluate_warning_predictions(

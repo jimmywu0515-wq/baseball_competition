@@ -136,6 +136,33 @@ def audit_pipeline_frames(
             if sources != {expected_source}:
                 raise DataIntegrityError(f"{table_name} has unexpected sources: {sorted(sources)}")
 
+    cohort = frames.get("audit_cohort_selection")
+    segments = frames.get("audit_ingestion_segments")
+    if cohort is not None and not cohort.empty:
+        selected = cohort[cohort["selected"].astype(bool)]
+        selected_ids = set(selected["pitcher"].astype(int))
+        raw_ids = set(raw["pitcher"].astype(int))
+        if not raw_ids.issubset(selected_ids):
+            raise DataIntegrityError("Raw data contains pitchers outside the frozen selected cohort.")
+        cutoff = pd.to_datetime(selected["selection_cutoff"], errors="raise")
+        if cutoff.dt.year.ge(2025).any():
+            raise DataIntegrityError("Cohort selection cutoff reaches the test season.")
+        if segments is None or segments.empty:
+            raise DataIntegrityError("Selected real-data cohort is missing its ingestion segment audit.")
+        if segments.duplicated(["pitcher", "season"]).any():
+            raise DataIntegrityError("Ingestion segment audit has duplicate pitcher-season rows.")
+        expected_segments = pd.MultiIndex.from_product(
+            [sorted(selected_ids), sorted(map(int, required_years))], names=["pitcher", "season"]
+        )
+        observed_segments = pd.MultiIndex.from_frame(
+            segments[["pitcher", "season"]].astype(int)
+        )
+        if not expected_segments.isin(observed_segments).all():
+            raise DataIntegrityError("Ingestion audit is missing selected pitcher-season segments.")
+        allowed_statuses = {"LOADED", "VERIFIED_NO_MLB_REGULAR_SEASON_PITCHES"}
+        if not set(segments["status"]).issubset(allowed_statuses):
+            raise DataIntegrityError("Ingestion segment audit contains a failed or unknown status.")
+
     raw_dates = pd.to_datetime(raw["game_date"], errors="raise")
     observed_years = set(raw_dates.dt.year.unique())
     missing_years = set(required_years) - observed_years
@@ -202,7 +229,7 @@ def audit_persisted_warehouse(storage, expected_source: str, required_years: Ite
         "raw_statcast_pitches", "stg_qualified_pitches", "dim_pitchers", "dim_games",
         "feat_pitcher_pitchtype_baseline", "feat_pitch_level_features",
         "fact_pitch_anomaly_scores", "fact_collapse_labels", "fact_alert_events",
-        "mart_model_evaluation",
+        "mart_model_evaluation", "audit_cohort_selection", "audit_ingestion_segments",
     ]
     frames = {name: storage.load_table(name) for name in table_names}
     report = audit_pipeline_frames(frames, expected_source, required_years)

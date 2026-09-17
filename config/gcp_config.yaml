@@ -1,9 +1,11 @@
 # GCP Lakehouse & Deployment Configuration
 
 gcp:
-  project_id: "project-f677f84f-db22-4976-96b"
+  # Runtime values come from GCP_PROJECT_ID and GCS_BUCKET_NAME. Keeping
+  # account identifiers out of source prevents publishing into the wrong project.
+  project_id: ""
   region: "us-central1"
-  gcs_bucket: "baseball-lakehouse-f677f84f"
+  gcs_bucket: ""
   bigquery_dataset: "baseball_analytics"
 
 storage:
@@ -27,5 +29,8 @@ tables:
   gold_bootstrap_intervals: "mart_bootstrap_confidence_intervals"
   gold_lead_time_sensitivity: "mart_lead_time_sensitivity"
   gold_matched_warning_episodes: "fact_matched_warning_episodes"
+  gold_pitcher_model_evaluation: "mart_pitcher_model_evaluation"
+  gold_cohort_selection_audit: "audit_cohort_selection"
+  gold_ingestion_segment_audit: "audit_ingestion_segments"
   gold_integrity_report: "warehouse_integrity_report"
   gold_case_studies: "mart_game_case_studies"

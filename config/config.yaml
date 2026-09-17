@@ -6,6 +6,13 @@ ingestion:
   end_date: "2025-09-30"
   required_seasons: [2023, 2024, 2025]
   pitcher_ids: [669203, 554430, 592332, 605400, 657277, 519242]
+  # Retain the six previously analyzed pitchers, then sample additional pitchers
+  # from pre-test records. No 2025 availability or outcomes enter this selection.
+  cohort_selection:
+    target_size: 40
+    seasons: [2023, 2024]
+    minimum_mlb_starts: 30
+    seed: 20250917
   game_type: "R"
 
 qualify:

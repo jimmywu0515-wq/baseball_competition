@@ -4,11 +4,15 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install minimal OS build tools
-RUN apt-get update && apt-get install -y --no-install-recommends     build-essential     curl     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies inside container
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy source code and scripts
 COPY . .
@@ -19,5 +23,6 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-# Default action: run Streamlit Coach Dashboard
+# Default action supports the existing Cloud Run dashboard. Cloud Run Jobs
+# override this command with scripts/cloud_entrypoint.py during deployment.
 CMD ["streamlit", "run", "dashboard/app.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true"]

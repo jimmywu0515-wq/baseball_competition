@@ -5,12 +5,14 @@ Supports:
 2. Explicit Simulation Benchmark Generator (for synthetic control testing).
 """
 import os
+import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import numpy as np
+from src.data_ingest.cohort import season_pitching_records
 
 # Keep the third-party cache inside the project so imports are reproducible in
 # restricted environments and never depend on a writable user profile.
@@ -50,13 +52,16 @@ class StatcastLoader:
         else:
             self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.last_segment_audit = pd.DataFrame()
 
     def fetch_real_pitchers_statcast(self, 
                                      pitcher_ids: Optional[List[int]] = None, 
                                      start_dt: str = "2023-03-30",
                                      end_dt: str = "2025-09-30",
                                      force_refresh: bool = False,
-                                     strict: bool = True) -> pd.DataFrame:
+                                     strict: bool = True,
+                                     pitcher_names: Optional[Dict[int, str]] = None,
+                                     verify_empty_seasons: bool = False) -> pd.DataFrame:
         """
         Fetches real MLB Statcast data for specified pitchers across date ranges.
         Uses local Parquet caching per pitcher.
@@ -68,10 +73,12 @@ class StatcastLoader:
 
         all_dfs = []
         failures = []
+        segment_audit = []
+        official_seasons = {}
         start = pd.Timestamp(start_dt)
         end = pd.Timestamp(end_dt)
         for pid in pitcher_ids:
-            p_name = REAL_PITCHER_COHORT.get(pid, {}).get("name", str(pid))
+            p_name = (pitcher_names or {}).get(pid, REAL_PITCHER_COHORT.get(pid, {}).get("name", str(pid)))
             for year in range(start.year, end.year + 1):
                 segment_start = max(start, pd.Timestamp(year=year, month=1, day=1))
                 segment_end = min(end, pd.Timestamp(year=year, month=12, day=31))
@@ -80,8 +87,20 @@ class StatcastLoader:
                 cache_file = self.cache_dir / (
                     f"real_statcast_{pid}_{segment_start_str}_{segment_end_str}.parquet"
                 )
+                empty_marker = cache_file.with_suffix(".verified_empty.json")
 
                 try:
+                    if not force_refresh and verify_empty_seasons and empty_marker.exists():
+                        marker = json.loads(empty_marker.read_text(encoding="utf-8"))
+                        if int(marker["pitcher"]) != int(pid) or int(marker["season"]) != year:
+                            raise RuntimeError("Verified-empty cache marker does not match the requested segment")
+                        segment_audit.append(dict(
+                            pitcher=pid, pitcher_name=p_name, season=year, row_count=0,
+                            status="VERIFIED_NO_MLB_REGULAR_SEASON_PITCHES",
+                            actual_data_source="mlb_statcast", verification_source="MLB Stats API cache",
+                        ))
+                        logger.info("Loading verified-empty season marker for %s, %s", p_name, year)
+                        continue
                     if not force_refresh and cache_file.exists():
                         logger.info(
                             "Loading cached Statcast data for %s (%s), season %s",
@@ -98,12 +117,32 @@ class StatcastLoader:
                         )
 
                     if df_p is None or df_p.empty:
+                        if verify_empty_seasons:
+                            if year not in official_seasons:
+                                official_seasons[year] = season_pitching_records(year, self.cache_dir / "cohort")
+                            official = official_seasons[year]
+                            record = official[official["pitcher"].eq(pid)]
+                            if record.empty or int(record["pitches"].sum()) == 0:
+                                empty_marker.write_text(json.dumps({
+                                    "pitcher": int(pid), "season": int(year),
+                                    "segment_start": segment_start_str, "segment_end": segment_end_str,
+                                    "verification_source": "MLB Stats API regular-season pitching totals",
+                                }, indent=2), encoding="utf-8")
+                                segment_audit.append(dict(
+                                    pitcher=pid, pitcher_name=p_name, season=year, row_count=0,
+                                    status="VERIFIED_NO_MLB_REGULAR_SEASON_PITCHES",
+                                    actual_data_source="mlb_statcast", verification_source="MLB Stats API",
+                                ))
+                                logger.info("Verified no MLB regular-season pitches for %s in %s", p_name, year)
+                                continue
                         raise RuntimeError("Statcast returned no pitches")
                     df_p = df_p.copy()
-                    if "pitcher_name" not in df_p.columns:
+                    if set(pd.to_numeric(df_p["pitcher"], errors="raise").unique()) != {int(pid)}:
+                        raise RuntimeError("Statcast/cache pitcher IDs do not match the requested pitcher")
+                    if "pitcher_name" not in df_p.columns or pitcher_names:
                         df_p["pitcher_name"] = p_name
                     if "p_throws" not in df_p.columns:
-                        df_p["p_throws"] = REAL_PITCHER_COHORT.get(pid, {}).get("throws", "R")
+                        df_p["p_throws"] = REAL_PITCHER_COHORT.get(pid, {}).get("throws", pd.NA)
                     df_p["actual_data_source"] = "mlb_statcast"
                     df_p["ingest_requested_start"] = segment_start_str
                     df_p["ingest_requested_end"] = segment_end_str
@@ -113,10 +152,17 @@ class StatcastLoader:
                         df_p.to_parquet(cache_file, index=False, engine="pyarrow")
                         logger.info("Cached %s pitches in %s", len(df_p), cache_file.name)
                     all_dfs.append(df_p)
+                    segment_audit.append(dict(
+                        pitcher=pid, pitcher_name=p_name, season=year, row_count=len(df_p),
+                        status="LOADED", actual_data_source="mlb_statcast",
+                        verification_source="Statcast pitcher-season response",
+                    ))
                 except Exception as exc:
                     failure = f"{p_name} ({pid}) {year}: {exc}"
                     failures.append(failure)
                     logger.error("Statcast segment failed: %s", failure)
+
+        self.last_segment_audit = pd.DataFrame(segment_audit)
 
         if failures and strict:
             raise RuntimeError(

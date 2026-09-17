@@ -8,6 +8,7 @@ from scipy.spatial.distance import mahalanobis
 
 from src.data_ingest.statcast_loader import StatcastLoader
 from src.data_ingest.qualify_filter import QualifyFilter
+from src.data_ingest.cohort import select_cohort
 from src.feature_engineering.mechanics_features import compute_kinematics_and_vaa
 from src.feature_engineering.rolling_stats import compute_rolling_features
 from src.baseline_builder.historical_baseline import BaselineBuilder
@@ -140,6 +141,23 @@ def test_central_config_has_valid_baseline_window():
     config = load_project_config()
     assert config["baseline"]["min_prior_starts"] <= config["baseline"]["historical_window_starts"]
     assert config["evaluation"]["test_start"] == "2025-01-01"
+
+
+def test_cohort_selection_is_pretest_deterministic_and_retains_original_pitchers():
+    records = pd.DataFrame([
+        {"pitcher": pitcher, "pitcher_name": f"P{pitcher}", "season": season,
+         "starts": 20, "appearances": 20, "pitches": 1000, "aggregate": True}
+        for pitcher in range(1, 9) for season in (2023, 2024)
+    ])
+    first = select_cohort(records, retained_ids=[1, 2], target_size=5,
+                          minimum_starts=30, cutoff_year=2024, seed=77)
+    shuffled = select_cohort(records.sample(frac=1, random_state=9), retained_ids=[1, 2],
+                             target_size=5, minimum_starts=30, cutoff_year=2024, seed=77)
+    assert set(first.loc[first["selected"], "pitcher"]) == set(
+        shuffled.loc[shuffled["selected"], "pitcher"]
+    )
+    assert {1, 2}.issubset(set(first.loc[first["selected"], "pitcher"]))
+    assert (first["selection_cutoff"] == "2024-12-31").all()
 
 
 def test_raw_integrity_requires_2025_and_rejects_conflicting_pitch_keys():

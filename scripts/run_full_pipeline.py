@@ -24,8 +24,9 @@ from src.baseline_builder.shrinkage_calibrator import ShrinkageCalibrator
 from src.changepoint_detector.cusum_detector import CUSUMDetector
 from src.changepoint_detector.ewma_detector import EWMADetector
 from src.configuration import load_project_config
+from src.data_ingest.cohort import resolve_cohort
 from src.data_ingest.qualify_filter import QualifyFilter
-from src.data_ingest.statcast_loader import REAL_PITCHER_COHORT, StatcastLoader
+from src.data_ingest.statcast_loader import StatcastLoader
 from src.evaluation.ablation_runner import AblationRunner
 from src.evaluation.baseline_comparator import BaselineComparator
 from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
@@ -33,6 +34,7 @@ from src.evaluation.lead_time import fixed_warning_horizon_analysis
 from src.evaluation.protocol import (
     assign_historical_temporal_split,
     assign_temporal_split,
+    eligible_pitch_mask,
     evaluate_warning_predictions,
     warning_events,
 )
@@ -87,6 +89,36 @@ def _missing_data_summary(raw_df: pd.DataFrame) -> pd.DataFrame:
                 "row_count": int(len(season_df)), "missing_count": missing,
                 "missing_fraction": float(missing / len(season_df)),
                 "actual_data_source": season_df["actual_data_source"].iloc[0],
+            })
+    return pd.DataFrame(rows)
+
+
+def _pitcher_model_evaluation(
+    evaluated_df: pd.DataFrame, episodes_df: pd.DataFrame, actual_source: str,
+    horizon_pitches: int,
+) -> pd.DataFrame:
+    """Expose between-pitcher heterogeneity under the same frozen predictions."""
+    rows = []
+    test = evaluated_df[evaluated_df["dataset_split"].eq("test")]
+    for pitcher, pitcher_df in test.groupby("pitcher", sort=True):
+        pitcher_episodes = episodes_df[
+            episodes_df["pitcher"].eq(pitcher) & episodes_df["dataset_split"].eq("test")
+        ] if not episodes_df.empty else pd.DataFrame()
+        name = pitcher_df["pitcher_name"].dropna().iloc[0] if pitcher_df["pitcher_name"].notna().any() else str(pitcher)
+        for model_key, prediction_col in MODEL_PREDICTIONS.items():
+            metrics, _, _ = evaluate_warning_predictions(
+                pitcher_df, pitcher_episodes, pitcher_df[prediction_col],
+                horizon_pitches=horizon_pitches, split="test",
+            )
+            rows.append({
+                "pitcher": int(pitcher), "pitcher_name": name, "model_key": model_key,
+                "evaluated_outings": metrics["evaluated_outings_count"],
+                "evaluated_pitches": metrics["evaluated_pitches_count"],
+                "collapse_episodes": metrics["total_collapse_episodes"],
+                "episode_recall": metrics["episode_recall"],
+                "warning_precision": metrics["warning_precision"],
+                "false_warnings_per_outing": metrics["false_warnings_per_outing"],
+                "actual_data_source": actual_source,
             })
     return pd.DataFrame(rows)
 
@@ -259,12 +291,21 @@ def run_pipeline(
     sm = StorageManager(base_dir=str(base_path))
     loader = StatcastLoader(cache_dir=str(base_path / "data" / "raw"))
     requested_mode = "mlb_statcast" if use_real_data else "simulation_benchmark"
+    cohort_selection_audit = pd.DataFrame()
+    ingestion_segment_audit = pd.DataFrame()
 
     if use_real_data:
-        raw_df = loader.fetch_real_pitchers_statcast(
-            pitcher_ids=[int(value) for value in config["ingestion"]["pitcher_ids"]],
-            start_dt=start_dt, end_dt=end_dt, strict=True,
+        cohort_selection_audit = resolve_cohort(
+            config["ingestion"], base_path / "data" / "raw" / "cohort"
         )
+        selected_cohort = cohort_selection_audit[cohort_selection_audit["selected"]].copy()
+        raw_df = loader.fetch_real_pitchers_statcast(
+            pitcher_ids=selected_cohort["pitcher"].astype(int).tolist(),
+            start_dt=start_dt, end_dt=end_dt, strict=True,
+            pitcher_names=selected_cohort.set_index("pitcher")["pitcher_name"].to_dict(),
+            verify_empty_seasons=True,
+        )
+        ingestion_segment_audit = loader.last_segment_audit.copy()
         actual_source = "mlb_statcast"
         required_years = list(range(pd.Timestamp(start_dt).year, pd.Timestamp(end_dt).year + 1))
     else:
@@ -280,6 +321,8 @@ def run_pipeline(
         raw_df, actual_source, start_dt, end_dt, required_years=required_years
     )
     raw_df = assign_temporal_split(raw_df)
+    for audit_frame in (cohort_selection_audit, ingestion_segment_audit):
+        audit_frame["actual_data_source"] = actual_source
 
     qualify_config = config["qualify"]
     qualifier = QualifyFilter(
@@ -381,6 +424,9 @@ def run_pipeline(
 
     protocol_manifest = manifest_holder["manifest"]
     metrics_summary = dict(model_metrics["proposed"])
+    test_pitchers_count = int(
+        evaluated_df.loc[eligible_pitch_mask(evaluated_df, "test"), "pitcher"].nunique()
+    )
     metrics_summary.update({
         "requested_data_mode": requested_mode,
         "actual_data_source": actual_source,
@@ -405,6 +451,9 @@ def run_pipeline(
             "The >=50-pitch filter is retrospective because final outing length is unknown live."
         ),
         "cohort_size": int(dim_pitchers["pitcher"].nunique()),
+        "test_pitchers_count": test_pitchers_count,
+        "preselected_pitchers_count": int(cohort_selection_audit["selected"].sum())
+        if not cohort_selection_audit.empty else int(dim_pitchers["pitcher"].nunique()),
         "qualified_outings": int(len(dim_games)),
         "qualified_pitches": int(len(qualified_df)),
         "protocol_sha256": protocol_manifest["protocol_sha256"],
@@ -463,6 +512,10 @@ def run_pipeline(
                  dropna=False)
         .size().reset_index(name="pitch_count")
     )
+    pitcher_model_evaluation = _pitcher_model_evaluation(
+        evaluated_df, episodes_df, actual_source,
+        int(evaluation_config["prediction_horizon_pitches"]),
+    )
 
     frames = {
         "raw_statcast_pitches": raw_df,
@@ -485,6 +538,9 @@ def run_pipeline(
         "audit_excluded_pitchers": excluded_pitchers,
         "audit_excluded_outings": excluded_outings,
         "audit_unavailable_scores": unavailable_scores,
+        "audit_cohort_selection": cohort_selection_audit,
+        "audit_ingestion_segments": ingestion_segment_audit,
+        "mart_pitcher_model_evaluation": pitcher_model_evaluation,
     }
     integrity_report = audit_pipeline_frames(frames, actual_source, required_years)
     frames["warehouse_integrity_report"] = integrity_report
@@ -509,6 +565,9 @@ def run_pipeline(
         "audit_excluded_pitchers": "gold",
         "audit_excluded_outings": "gold",
         "audit_unavailable_scores": "gold",
+        "audit_cohort_selection": "gold",
+        "audit_ingestion_segments": "gold",
+        "mart_pitcher_model_evaluation": "gold",
         "warehouse_integrity_report": "gold",
     }
     sm.save_tables_atomically([
@@ -534,6 +593,9 @@ def run_pipeline(
         "ablation_results.csv": ablations,
         "sensitivity_results.csv": sensitivity,
         "warehouse_integrity_report.csv": integrity_report,
+        "cohort_selection.csv": cohort_selection_audit,
+        "ingestion_segments.csv": ingestion_segment_audit,
+        "pitcher_model_evaluation.csv": pitcher_model_evaluation,
     }
     for filename, frame in output_frames.items():
         frame.to_csv(output_dir / filename, index=False)

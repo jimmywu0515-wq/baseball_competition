@@ -1,151 +1,104 @@
-"""
-Mahalanobis Distance Anomaly Scorer (§5 Step 4 & Critique Fixes)
-AUDITED MATHEMATICAL FORMULATION:
-Calculates true quadratic Mahalanobis distance:
-    D_M^2 = (x - mu)^T * Sigma^{-1} * (x - mu)
-Removes the invalid element-wise absolute value summation bug.
-"""
-import logging
-from typing import Dict, Any, Tuple
+"""Vectorized, exact Mahalanobis pitch anomaly scoring."""
+from typing import Any, Dict
+
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
 
 FEATURE_COLS = [
-    "release_pos_x",
-    "release_pos_z",
-    "release_extension",
-    "release_speed",
-    "release_spin_rate",
-    "spin_axis_cos",
-    "spin_axis_sin",
-    "pfx_x",
-    "pfx_z",
-    "vaa"
+    "release_pos_x", "release_pos_z", "release_extension", "release_speed",
+    "release_spin_rate", "spin_axis_cos", "spin_axis_sin", "pfx_x", "pfx_z", "vaa",
 ]
+IDX_RELEASE = [0, 1, 2]
+IDX_SPEED = [3]
+IDX_SPIN = [4, 5, 6]
+IDX_MOVEMENT = [7, 8, 9]
 
-# Feature indices for sub-component decomposition
-IDX_RELEASE = [0, 1, 2]       # release_pos_x, release_pos_z, release_extension
-IDX_SPEED = [3]               # release_speed
-IDX_SPIN = [4, 5, 6]          # release_spin_rate, spin_axis_cos, spin_axis_sin
-IDX_MOVEMENT = [7, 8, 9]      # pfx_x, pfx_z, vaa
 
 class MahalanobisScorer:
-    """
-    Computes exact Mahalanobis distances and true sub-group quadratic contributions.
-    """
+    """Compute exact distances and diagonal feature-group contributions."""
+
     def __init__(self, ridge_reg: float = 1e-4):
         self.ridge_reg = ridge_reg
 
-    def score_pitches(self, 
-                      outing_df: pd.DataFrame, 
-                      pitcher_id: int, 
-                      game_pk: int, 
-                      baseline_store: Dict[str, Any],
-                      calibrated_means: Dict[str, np.ndarray]) -> pd.DataFrame:
-        """
-        Calculates exact Mahalanobis distance per pitch.
-        """
+    def score_pitches(
+        self, outing_df: pd.DataFrame, pitcher_id: int, game_pk: int,
+        baseline_store: Dict[str, Any], calibrated_means: Dict[str, np.ndarray],
+    ) -> pd.DataFrame:
         df = outing_df.copy()
+        n_rows = len(df)
+        m_raw = np.full(n_rows, np.nan)
+        m_calib = np.full(n_rows, np.nan)
+        contributions = [np.full(n_rows, np.nan) for _ in range(4)]
+        dominant = np.full(n_rows, "Unavailable: insufficient history", dtype=object)
+        statuses = np.full(n_rows, "INSUFFICIENT_HISTORY", dtype=object)
 
-        m_raw_list = []
-        m_calib_list = []
-        contrib_rel = []
-        contrib_spd = []
-        contrib_spin = []
-        contrib_mov = []
-        dominant_feature = []
-        score_status = []
+        calibration = df.get(
+            "is_calibration_phase", pd.Series(False, index=df.index)
+        ).fillna(False).astype(bool).to_numpy()
+        dominant[calibration] = "Unavailable: calibration phase"
+        statuses[calibration] = "CALIBRATION_PHASE"
+        pitch_types = df["pitch_type"].to_numpy()
 
-        for _, row in df.iterrows():
-            pt = row["pitch_type"]
-            key = f"{pitcher_id}_{game_pk}_{pt}"
-            base_info = baseline_store.get(key)
-
-            if bool(row.get("is_calibration_phase", False)):
-                m_raw_list.append(np.nan)
-                m_calib_list.append(np.nan)
-                contrib_rel.append(np.nan)
-                contrib_spd.append(np.nan)
-                contrib_spin.append(np.nan)
-                contrib_mov.append(np.nan)
-                dominant_feature.append("Unavailable: calibration phase")
-                score_status.append("CALIBRATION_PHASE")
+        for pitch_type in pd.unique(df["pitch_type"].dropna()):
+            positions = np.flatnonzero((pitch_types == pitch_type) & ~calibration)
+            if not len(positions):
                 continue
-
-            if base_info is None or base_info.get("status") != "QUALIFIED" or pt not in calibrated_means:
-                m_raw_list.append(np.nan)
-                m_calib_list.append(np.nan)
-                contrib_rel.append(np.nan)
-                contrib_spd.append(np.nan)
-                contrib_spin.append(np.nan)
-                contrib_mov.append(np.nan)
-                unavailable_status = (
-                    base_info.get("status", "INSUFFICIENT_HISTORY")
-                    if base_info is not None else "INSUFFICIENT_HISTORY"
+            baseline = baseline_store.get(f"{pitcher_id}_{game_pk}_{pitch_type}")
+            if (baseline is None or baseline.get("status") != "QUALIFIED"
+                    or pitch_type not in calibrated_means):
+                status = (
+                    baseline.get("status", "INSUFFICIENT_HISTORY")
+                    if baseline is not None else "INSUFFICIENT_HISTORY"
                 )
-                if pt not in calibrated_means and unavailable_status == "QUALIFIED":
-                    unavailable_status = "INSUFFICIENT_CALIBRATION_PITCHES"
-                dominant_feature.append(f"Unavailable: {unavailable_status.lower()}")
-                score_status.append(unavailable_status)
+                if pitch_type not in calibrated_means and status == "QUALIFIED":
+                    status = "INSUFFICIENT_CALIBRATION_PITCHES"
+                statuses[positions] = status
+                dominant[positions] = f"Unavailable: {status.lower()}"
                 continue
 
-            x = np.array([row.get(c, 0.0) for c in FEATURE_COLS])
-            if np.isnan(x).any():
-                m_raw_list.append(np.nan)
-                m_calib_list.append(np.nan)
-                contrib_rel.append(np.nan)
-                contrib_spd.append(np.nan)
-                contrib_spin.append(np.nan)
-                contrib_mov.append(np.nan)
-                dominant_feature.append("Unavailable: missing features")
-                score_status.append("MISSING_FEATURES")
+            values = df.iloc[positions][FEATURE_COLS].apply(
+                pd.to_numeric, errors="coerce"
+            ).to_numpy(float)
+            complete = np.isfinite(values).all(axis=1)
+            missing_positions = positions[~complete]
+            statuses[missing_positions] = "MISSING_FEATURES"
+            dominant[missing_positions] = "Unavailable: missing features"
+            if not complete.any():
                 continue
 
-            mu_raw = base_info["mu_vec"]
-            mu_calib = calibrated_means[pt]
-            prec_mat = base_info["prec_mat"]
+            valid_positions = positions[complete]
+            x = values[complete]
+            raw_difference = x - np.asarray(baseline["mu_vec"], dtype=float)
+            calibrated_difference = x - np.asarray(calibrated_means[pitch_type], dtype=float)
+            precision = np.asarray(baseline["prec_mat"], dtype=float)
+            raw_squared = np.einsum("ij,jk,ik->i", raw_difference, precision, raw_difference)
+            calibrated_squared = np.einsum(
+                "ij,jk,ik->i", calibrated_difference, precision, calibrated_difference
+            )
+            m_raw[valid_positions] = np.round(np.sqrt(np.maximum(0.0, raw_squared)), 4)
+            m_calib[valid_positions] = np.round(np.sqrt(np.maximum(0.0, calibrated_squared)), 4)
 
-            # Exact Raw Mahalanobis Distance: sqrt( Delta^T * Sigma^{-1} * Delta )
-            diff_raw = x - mu_raw
-            d2_raw = float(np.dot(np.dot(diff_raw, prec_mat), diff_raw))
-            dist_raw = np.sqrt(max(0.0, d2_raw))
-            m_raw_list.append(round(dist_raw, 4))
+            diagonal_quadratic = (calibrated_difference ** 2) * np.diag(precision)
+            total = diagonal_quadratic.sum(axis=1) + 1e-6
+            for result, indices in zip(
+                contributions, (IDX_RELEASE, IDX_SPEED, IDX_SPIN, IDX_MOVEMENT)
+            ):
+                result[valid_positions] = np.round(
+                    diagonal_quadratic[:, indices].sum(axis=1) / total * 100.0, 1
+                )
+            dominant[valid_positions] = np.asarray(FEATURE_COLS, dtype=object)[
+                np.argmax(diagonal_quadratic, axis=1)
+            ]
+            statuses[valid_positions] = "AVAILABLE"
 
-            # Exact Calibrated Mahalanobis Distance
-            diff_calib = x - mu_calib
-            d2_calib = float(np.dot(np.dot(diff_calib, prec_mat), diff_calib))
-            dist_calib = np.sqrt(max(0.0, d2_calib))
-            m_calib_list.append(round(dist_calib, 4))
-
-            # Feature Group Contribution Decomposition (Diagonal quadratic projections)
-            # D_i^2 ≈ Delta_i^2 * Prec_ii
-            diag_quad = (diff_calib ** 2) * np.diag(prec_mat)
-            total_quad = np.sum(diag_quad) + 1e-6
-
-            rel_p = np.sum(diag_quad[IDX_RELEASE]) / total_quad * 100.0
-            spd_p = np.sum(diag_quad[IDX_SPEED]) / total_quad * 100.0
-            spin_p = np.sum(diag_quad[IDX_SPIN]) / total_quad * 100.0
-            mov_p = np.sum(diag_quad[IDX_MOVEMENT]) / total_quad * 100.0
-
-            contrib_rel.append(round(float(rel_p), 1))
-            contrib_spd.append(round(float(spd_p), 1))
-            contrib_spin.append(round(float(spin_p), 1))
-            contrib_mov.append(round(float(mov_p), 1))
-
-            max_idx = np.argmax(diag_quad)
-            dominant_feature.append(FEATURE_COLS[max_idx])
-            score_status.append("AVAILABLE")
-
-        df["mahalanobis_raw"] = m_raw_list
-        df["mahalanobis_calibrated"] = m_calib_list
-        df["contrib_release_pct"] = contrib_rel
-        df["contrib_speed_pct"] = contrib_spd
-        df["contrib_spin_pct"] = contrib_spin
-        df["contrib_movement_pct"] = contrib_mov
-        df["dominant_drift_feature"] = dominant_feature
-        df["score_status"] = score_status
+        df["mahalanobis_raw"] = m_raw
+        df["mahalanobis_calibrated"] = m_calib
+        df["contrib_release_pct"] = contributions[0]
+        df["contrib_speed_pct"] = contributions[1]
+        df["contrib_spin_pct"] = contributions[2]
+        df["contrib_movement_pct"] = contributions[3]
+        df["dominant_drift_feature"] = dominant
+        df["score_status"] = statuses
         df["score_available"] = df["score_status"].eq("AVAILABLE")
-
         return df

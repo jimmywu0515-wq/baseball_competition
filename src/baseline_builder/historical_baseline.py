@@ -75,6 +75,11 @@ class BaselineBuilder:
         baseline_store = {}
 
         for pitcher_id, p_outings in outings.groupby("pitcher"):
+            pitcher_df = df[df["pitcher"].eq(pitcher_id)]
+            outing_pitch_types = {
+                game_pk: group["pitch_type"].dropna().unique()
+                for game_pk, group in pitcher_df.groupby("game_pk", sort=False)
+            }
             outings_list = p_outings.to_dict("records")
 
             for i, curr_outing in enumerate(outings_list):
@@ -93,9 +98,7 @@ class BaselineBuilder:
                 # Policy check: Must have at least min_prior_starts completed prior outings
                 if len(prior_outings) < self.min_prior_starts:
                     # Mark as insufficient history (cold start) - DO NOT borrow from future!
-                    for pt in df[
-                        (df["pitcher"] == pitcher_id) & (df["game_pk"] == curr_game_pk)
-                    ]["pitch_type"].unique():
+                    for pt in outing_pitch_types.get(curr_game_pk, []):
                         baseline_store[f"{pitcher_id}_{curr_game_pk}_{pt}"] = {
                             "status": "INSUFFICIENT_HISTORY",
                             "prior_starts": len(prior_outings)
@@ -103,13 +106,11 @@ class BaselineBuilder:
                     continue
 
                 prior_pks = [g["game_pk"] for g in prior_outings]
-                prior_pitches = df[(df["pitcher"] == pitcher_id) & (df["game_pk"].isin(prior_pks))]
+                prior_pitches = pitcher_df[pitcher_df["game_pk"].isin(prior_pks)]
 
                 # Compute a distinct baseline for every pitch type present in
                 # the current outing. No primary-pitch designation is required.
-                current_pitch_types = df[
-                    (df["pitcher"] == pitcher_id) & (df["game_pk"] == curr_game_pk)
-                ]["pitch_type"].dropna().unique()
+                current_pitch_types = outing_pitch_types.get(curr_game_pk, [])
                 for pt in current_pitch_types:
                     pt_pitches = prior_pitches[prior_pitches["pitch_type"].eq(pt)]
                     X = pt_pitches[FEATURE_COLS].dropna()

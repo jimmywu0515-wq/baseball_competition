@@ -24,4 +24,10 @@ def load_project_config(path: Optional[Path] = None) -> Dict[str, Any]:
         raise ValueError("ingestion.required_seasons must be unique and sorted.")
     if not config["ingestion"].get("pitcher_ids"):
         raise ValueError("ingestion.pitcher_ids must contain at least one pitcher.")
+    selection = config["ingestion"].get("cohort_selection")
+    if selection:
+        if any(int(year) >= 2025 for year in selection["seasons"]):
+            raise ValueError("cohort_selection.seasons must contain only pre-2025 seasons.")
+        if int(selection["target_size"]) < len(set(config["ingestion"]["pitcher_ids"])):
+            raise ValueError("cohort_selection.target_size cannot be smaller than retained pitcher_ids.")
     return config

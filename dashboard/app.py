@@ -393,12 +393,21 @@ with tab3:
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
     result_dir = app_root / "outputs" / "real_data"
+    pitcher_eval_path = result_dir / "pitcher_model_evaluation.csv"
+    if pitcher_eval_path.exists():
+        st.subheader("Frozen 2025 results by pitcher")
+        st.caption(
+            "Use this table to check whether pooled performance is consistent across pitchers "
+            "or concentrated in a small subset."
+        )
+        st.dataframe(pd.read_csv(pitcher_eval_path), use_container_width=True, hide_index=True)
+
     ci_path = result_dir / "bootstrap_confidence_intervals.csv"
     if ci_path.exists():
         st.subheader("Paired bootstrap 95% intervals")
         st.caption(
             "Outing bootstrap samples are paired across models. Pitcher-clustered intervals are "
-            "shown as a sensitivity analysis and are uncertain with a small pitcher cohort."
+            "shown as a sensitivity analysis; the cluster count is reported in the table."
         )
         st.dataframe(pd.read_csv(ci_path), use_container_width=True, hide_index=True)
 
