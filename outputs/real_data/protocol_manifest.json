@@ -1,107 +1,128 @@
 {
   "protocol_name": "2023_train_2024_validation_2025_test",
-  "protocol_sha256": "a02d63cfc72e614b9a93a959b9b2eb51ce48a4689937c0792b297bb5c8dfb62d",
-  "recorded_at_utc": "2026-09-16T20:23:53.407180+00:00",
+  "protocol_sha256": "ffee26c9335fe779634380dff41a6db4a4278481d385753c4ef91b25facf66d7",
+  "recorded_at_utc": "2026-09-21T18:37:59.908046+00:00",
   "actual_data_source": "mlb_statcast",
   "baseline_update_policy": "For every outing, use at most the 12 most recent qualified outings with dates strictly before the scoring date; 2025 baselines may update only from completed prior outings.",
   "threshold_policy": "Select on 2024 only; keep fixed for every 2025 result and bootstrap replicate.",
   "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
-  "frozen_settings": {
-    "ingestion": {
-      "start_date": "2023-03-30",
-      "end_date": "2025-09-30",
-      "required_seasons": [
-        2023,
-        2024,
-        2025
-      ],
-      "pitcher_ids": [
-        669203,
-        554430,
-        592332,
-        605400,
-        657277,
-        519242
-      ],
-      "game_type": "R"
+  "resolved_runtime": {
+    "source_control": {
+      "commit_sha": "bc160b734fff3e22217d128ad3e62ab0724d8c1d",
+      "worktree_dirty": true
     },
-    "qualify": {
-      "min_pitches_per_game": 50,
-      "min_starts_for_cohort": 10,
+    "cohort": {
+      "identifier": "pretest_40_seed_20250917",
+      "selected_size": 40,
+      "qualified_size": 40,
+      "selection_seed": 20250917,
+      "selection_seasons": [
+        2023,
+        2024
+      ]
+    },
+    "random_seeds": {
+      "cohort_selection": 20250917,
+      "contextual_logistic_regression": 42,
+      "bootstrap": 2025
+    },
+    "temporal_protocol": {
+      "training_end": "2023-12-31",
+      "validation_end": "2024-12-31",
+      "test_start": "2025-01-01",
+      "test_end": "2025-09-30",
+      "training_season": 2023,
+      "validation_season": 2024,
+      "test_season": 2025
+    },
+    "qualification": {
+      "minimum_pitches_per_outing": 50,
+      "minimum_pretest_starts": 10,
       "cohort_eligibility_end": "2024-12-31",
-      "max_missing_mechanics_pct": 0.05,
-      "exclude_openers": true,
-      "exclude_position_pitchers": true,
-      "exclude_rain_delays_min": 30,
-      "top_n_pitch_types": 3
+      "maximum_missing_mechanics_fraction": 0.05,
+      "top_pitch_types": 3
     },
     "baseline": {
       "historical_window_starts": 12,
-      "min_prior_starts": 5,
-      "min_pitches_for_baseline": 40,
-      "intra_game_calibration_pitches": 20,
+      "minimum_prior_starts": 5,
+      "minimum_pitch_type_observations": 40,
+      "calibration_pitches": 20,
       "shrinkage_lambda": 0.35
     },
-    "features": {
-      "mechanics_cols": [
-        "release_pos_x",
-        "release_pos_z",
-        "release_extension",
-        "release_speed",
-        "release_spin_rate",
-        "spin_axis",
-        "pfx_x",
-        "pfx_z",
-        "vaa"
-      ],
-      "rolling_windows": [
-        5,
-        10
-      ]
-    },
-    "anomaly": {
+    "anomaly_scoring": {
       "method": "mahalanobis",
-      "ridge_regularization": "1e-4",
-      "health_index_decay_alpha": 0.45
+      "ridge_regularization": 0.0001,
+      "msi_decay_alpha": 0.45
     },
-    "changepoint": {
-      "detector": "cusum",
-      "cusum_slack_k": 0.5,
-      "cusum_threshold_h": 4.5,
-      "ewma_lambda": 0.2,
-      "ewma_threshold_sigma": 2.8,
-      "consecutive_anomaly_pitches": 3
+    "detectors": {
+      "cusum": {
+        "slack_k": 0.5,
+        "internal_alert_h": 4.5,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      },
+      "ewma": {
+        "lambda": 0.2,
+        "control_limit_sigma": 2.8,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      }
     },
-    "labels": {
-      "window_pa_size": 3,
-      "blended_xwoba_percentile": 0.9,
-      "blended_xwoba_threshold": 0.45,
-      "min_barrels_in_window": 2,
-      "min_bb_hbp_in_window": 2
-    },
-    "evaluation": {
-      "naive_velocity_drop_mph": 1.5,
-      "naive_pitch_count_threshold": 85,
-      "prediction_horizon_pitches": 15,
-      "prediction_horizon_pas": 3,
-      "false_warnings_per_outing": 0.5,
-      "train_end": "2023-12-31",
-      "validation_end": "2024-12-31",
-      "test_start": "2025-01-01",
-      "bootstrap_samples": 1000,
-      "bootstrap_seed": 2025,
-      "sensitivity_horizons": [
+    "horizons": {
+      "label_pitches": 15,
+      "label_plate_appearances": 3,
+      "warning_matching_pitches": 15,
+      "sensitivity_matching_pitches": [
         10,
         15,
         20,
         25
       ]
     },
-    "frozen_validation_thresholds": {
-      "proposed": 214.651,
-      "contextual": 0.538493555718515,
-      "velocity": null,
-      "pitch_count": 86.0
+    "bootstrap": {
+      "samples": 1000,
+      "seed": 2025,
+      "primary_resampling_unit": "outing",
+      "sensitivity_resampling_unit": "pitcher"
+    },
+    "threshold_selection": {
+      "season": 2024,
+      "allowed_maximum_false_warnings_per_outing": 0.5
+    },
+    "locations": {
+      "raw_cache": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\data\\raw",
+      "warehouse": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\data\\baseball_warehouse.duckdb",
+      "output_directory": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\outputs\\real_data"
+    },
+    "selected_models": {
+      "proposed": {
+        "validation_selected_operating_threshold": 211.95860000000002,
+        "validation_episode_recall": 0.10130111524163568,
+        "validation_warning_precision": 0.32732732732732733,
+        "validation_false_warnings_per_outing": 0.4686192468619247,
+        "allowed_maximum_false_warnings_per_outing": 0.5
+      },
+      "contextual": {
+        "validation_selected_operating_threshold": 0.517946818033778,
+        "validation_episode_recall": 0.10315985130111524,
+        "validation_warning_precision": 0.32599118942731276,
+        "validation_false_warnings_per_outing": 0.4801255230125523,
+        "allowed_maximum_false_warnings_per_outing": 0.5
+      },
+      "velocity": {
+        "validation_selected_operating_threshold": 4.4466666666666725,
+        "validation_episode_recall": 0.00046468401486988845,
+        "validation_warning_precision": 1.0,
+        "validation_false_warnings_per_outing": 0.0,
+        "allowed_maximum_false_warnings_per_outing": 0.5
+      },
+      "pitch_count": {
+        "validation_selected_operating_threshold": 78.0,
+        "validation_episode_recall": 0.11663568773234201,
+        "validation_warning_precision": 0.36063218390804597,
+        "validation_false_warnings_per_outing": 0.46548117154811713,
+        "allowed_maximum_false_warnings_per_outing": 0.5
+      }
     }
   }
 }

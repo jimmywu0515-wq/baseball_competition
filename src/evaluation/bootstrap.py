@@ -6,7 +6,11 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from src.evaluation.protocol import eligible_pitch_mask, evaluate_warning_predictions
+from src.evaluation.protocol import (
+    build_evaluation_universe,
+    eligible_pitch_mask,
+    evaluate_warning_predictions,
+)
 
 
 METRICS = (
@@ -23,20 +27,31 @@ def _outing_sufficient_statistics(
     model_predictions: Dict[str, str],
     split: str,
     horizon_pitches: int,
+    model_availability: Optional[Dict[str, str]] = None,
 ) -> pd.DataFrame:
     rows = []
     split_df = df[df["dataset_split"].eq(split)]
+    universe = build_evaluation_universe(df, split)
     split_episodes = episodes[episodes["dataset_split"].eq(split)] if not episodes.empty else episodes
-    for (game_pk, pitcher), outing in split_df.groupby(["game_pk", "pitcher"], sort=True):
+    grouped = split_df.groupby(["game_pk", "pitcher"], sort=False)
+    for game_pk, pitcher in universe[["game_pk", "pitcher"]].itertuples(index=False, name=None):
+        outing = grouped.get_group((game_pk, pitcher))
         outing_episodes = split_episodes[
             split_episodes["game_pk"].eq(game_pk) & split_episodes["pitcher"].eq(pitcher)
         ] if not split_episodes.empty else pd.DataFrame()
-        eligible = outing.loc[eligible_pitch_mask(outing)]
         for model_key, prediction_col in model_predictions.items():
+            availability_col = (model_availability or {}).get(model_key)
+            availability = (
+                outing[availability_col].notna()
+                if availability_col and availability_col in outing
+                else None
+            )
             metrics, warnings, _ = evaluate_warning_predictions(
                 outing, outing_episodes, outing[prediction_col],
                 horizon_pitches=horizon_pitches, split=split,
+                availability=availability,
             )
+            eligible = outing.loc[eligible_pitch_mask(outing, availability=availability)]
             pred = eligible[prediction_col].fillna(False).astype(bool)
             outcome = eligible["y_true_onset_in_horizon"].fillna(False).astype(bool)
             rows.append({
@@ -93,11 +108,13 @@ def paired_bootstrap_confidence_intervals(
     n_bootstrap: int = 1000,
     seed: int = 2025,
     cluster_by_pitcher: bool = False,
+    model_availability: Optional[Dict[str, str]] = None,
 ) -> pd.DataFrame:
     """Use the same resampled outings or pitchers for every compared model."""
     episodes = episodes if episodes is not None else pd.DataFrame()
     stats = _outing_sufficient_statistics(
-        df, episodes, model_predictions, split=split, horizon_pitches=horizon_pitches
+        df, episodes, model_predictions, split=split, horizon_pitches=horizon_pitches,
+        model_availability=model_availability,
     )
     if stats.empty:
         return pd.DataFrame()
@@ -114,11 +131,28 @@ def paired_bootstrap_confidence_intervals(
     units = sorted(stats[unit_column].unique())
     arrays = {}
     point_totals = {}
+    point_values = {}
     for model in models:
         model_stats = stats[stats["model_key"].eq(model)]
         aggregate = model_stats.groupby(unit_column)[value_columns].sum().reindex(units, fill_value=0)
         arrays[model] = aggregate.to_numpy(dtype=float)
         point_totals[model] = arrays[model].sum(axis=0, keepdims=True)
+        prediction_col = model_predictions[model]
+        availability_col = (model_availability or {}).get(model)
+        availability = (
+            df[availability_col].notna()
+            if availability_col and availability_col in df
+            else None
+        )
+        ordinary, _, _ = evaluate_warning_predictions(
+            df, episodes, df[prediction_col], split=split,
+            horizon_pitches=horizon_pitches, availability=availability,
+        )
+        point, _ = _metrics_from_totals(point_totals[model], column_index)
+        point[0, 0] = ordinary["episode_recall"]
+        point[0, 1] = ordinary["warning_precision"]
+        point[0, 2] = ordinary["false_warnings_per_outing"]
+        point_values[model] = point
 
     rng = np.random.default_rng(seed)
     sampled_positions = rng.integers(0, len(units), size=(n_bootstrap, len(units)))
@@ -128,7 +162,7 @@ def paired_bootstrap_confidence_intervals(
     for model in models:
         totals = arrays[model][sampled_positions].sum(axis=1)
         draws, invalid = _metrics_from_totals(totals, column_index)
-        point, _ = _metrics_from_totals(point_totals[model], column_index)
+        point = point_values[model]
         draws_by_model[model] = draws
         invalid_by_model[model] = invalid
         for metric_idx, metric in enumerate(METRICS):
@@ -151,8 +185,8 @@ def paired_bootstrap_confidence_intervals(
             for metric_idx, metric in enumerate(METRICS):
                 difference = draws_by_model[proposed][:, metric_idx] - draws_by_model[competitor][:, metric_idx]
                 finite = difference[np.isfinite(difference)]
-                point_proposed, _ = _metrics_from_totals(point_totals[proposed], column_index)
-                point_competitor, _ = _metrics_from_totals(point_totals[competitor], column_index)
+                point_proposed = point_values[proposed]
+                point_competitor = point_values[competitor]
                 rows.append({
                     "resampling_unit": "pitcher" if cluster_by_pitcher else "outing",
                     "comparison": f"proposed_minus_{competitor}",

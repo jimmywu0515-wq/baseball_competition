@@ -9,11 +9,13 @@ class CUSUMDetector:
     """Apply a one-sided upper CUSUM only to pitches eligible for scoring."""
 
     def __init__(self, slack_k: float = 0.5, threshold_h: float = 4.0,
-                 reference_mean: float = 1.0, reference_std: float = 0.5):
+                 reference_mean: float = 1.0, reference_std: float = 0.5,
+                 calibration_pitches: int = 20):
         self.slack_k = slack_k
         self.threshold_h = threshold_h
         self.reference_mean = reference_mean
         self.reference_std = reference_std
+        self.calibration_pitches = calibration_pitches
 
     def detect_game_alerts(self, game_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         order_col = "pitch_number_in_outing" if "pitch_number_in_outing" in game_df else "pitch_number_in_game"
@@ -25,7 +27,10 @@ class CUSUMDetector:
         for i, score in enumerate(scores):
             row = df.iloc[i]
             pitch_number = int(row.get("pitch_number_in_outing", row.get("pitch_number_in_game", 0)))
-            eligible = (pitch_number > 20
+            past_calibration = not bool(
+                row.get("is_calibration_phase", pitch_number <= self.calibration_pitches)
+            )
+            eligible = (past_calibration
                         and bool(row.get("score_available", np.isfinite(score)))
                         and np.isfinite(score))
             if not eligible:

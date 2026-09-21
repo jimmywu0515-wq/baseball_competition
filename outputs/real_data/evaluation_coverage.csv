@@ -1,0 +1,5 @@
+model_key,total_qualified_test_outings,outings_with_available_score,outings_without_available_score,evaluation_opportunity_pitches,score_available_evaluation_pitches,pitch_level_scoring_coverage,outing_level_scoring_coverage,evaluated_episodes,episode_recall_denominator,warning_precision_denominator,false_warnings_per_outing_denominator,actual_data_source
+proposed,708,708,0,43693,42847,0.9806376307417665,1.0,1581,1581,460,708,mlb_statcast
+contextual,708,708,0,43693,43693,1.0,1.0,1581,1581,503,708,mlb_statcast
+velocity,708,708,0,43693,21833,0.499691026022475,1.0,1581,1581,1,708,mlb_statcast
+pitch_count,708,708,0,43693,43693,1.0,1.0,1581,1581,476,708,mlb_statcast

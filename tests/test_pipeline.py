@@ -1,6 +1,7 @@
 """
 Comprehensive Unit & Integration Tests for Audited Baseball Fatigue System
 """
+import copy
 import pytest
 import numpy as np
 import pandas as pd
@@ -19,11 +20,17 @@ from src.changepoint_detector.cusum_detector import CUSUMDetector
 from src.label_builder.collapse_labels import CollapseLabelBuilder
 from src.evaluation.metrics import EvaluationEngine
 from src.evaluation.baseline_comparator import BaselineComparator
-from src.evaluation.protocol import assign_temporal_split, evaluate_warning_predictions
+from src.evaluation.protocol import (
+    assign_temporal_split,
+    evaluate_warning_predictions,
+    warning_events,
+)
 from src.evaluation.protocol import select_operating_threshold
 from src.storage.integrity import DataIntegrityError, PITCH_KEY, prepare_raw_pitch_data
 from src.configuration import load_project_config
 from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
+from src.presentation import validate_operating_threshold_artifacts
+from scripts.run_full_pipeline import _resolve_algorithm_components
 
 @pytest.fixture
 def sample_dataset():
@@ -488,3 +495,134 @@ def test_paired_bootstrap_reports_direct_differences_and_zero_denominators():
     )
     assert "proposed_minus_contextual" in set(result["comparison"])
     assert result["zero_denominator_frequency"].between(0, 1).all()
+
+
+def test_nondefault_config_values_reach_production_components_and_msi():
+    config = copy.deepcopy(load_project_config())
+    config["anomaly"]["health_index_decay_alpha"] = 0.73
+    config["baseline"]["intra_game_calibration_pitches"] = 7
+    config["labels"]["prediction_horizon_pitches"] = 11
+    config["labels"]["prediction_horizon_pas"] = 2
+    config["evaluation"]["warning_matching_horizon_pitches"] = 13
+    config["changepoint"]["cusum_slack_k"] = 0.17
+    config["changepoint"]["cusum_internal_alert_h"] = 8.2
+    config["changepoint"]["ewma_lambda"] = 0.31
+    config["changepoint"]["ewma_control_limit_sigma"] = 3.4
+
+    components = _resolve_algorithm_components(config)
+    assert components["msi_decay_alpha"] == 0.73
+    assert components["calibration_pitches"] == 7
+    assert components["label_builder"].horizon_pitches == 11
+    assert components["label_builder"].horizon_pas == 2
+    assert components["comparator"].horizon_pitches == 13
+    assert components["cusum"].slack_k == 0.17
+    assert components["cusum"].threshold_h == 8.2
+    assert components["ewma"].ewma_lambda == 0.31
+    assert components["ewma"].l_sigma == 3.4
+    configured = compute_mechanics_stability_index(np.array([1.0]), components["msi_decay_alpha"])
+    default = compute_mechanics_stability_index(np.array([1.0]))
+    assert configured[0] != default[0]
+
+
+@pytest.mark.parametrize(
+    "rows,predicted,expected_pitches",
+    [
+        # Unavailable pitch 22 keeps warnings at 21 and 23 distinct.
+        ([(1, 21, True), (1, 22, False), (1, 23, True), (1, 24, True)],
+         [True, True, True, True], [21, 23]),
+        # A missing pitch number breaks an otherwise uninterrupted flagged run.
+        ([(1, 21, True), (1, 23, True), (1, 24, True)], [True, True, True], [21, 23]),
+        # Outing boundaries always start a new warning.
+        ([(1, 21, True), (2, 22, True)], [True, True], [21, 22]),
+        # A calibration pitch cannot connect to the first operational pitch.
+        ([(1, 20, True), (1, 21, True)], [True, True], [21]),
+        # Normal adjacent warnings collapse to one event.
+        ([(1, 21, True), (1, 22, True), (1, 23, True)], [True, True, True], [21]),
+    ],
+)
+def test_warning_continuity_respects_original_pitch_sequence(rows, predicted, expected_pitches):
+    frame = pd.DataFrame(rows, columns=["game_pk", "pitch_number_in_outing", "score_available"])
+    frame["pitcher"] = 10
+    frame["pa_number_in_outing"] = frame["pitch_number_in_outing"] // 4
+    frame["game_date"] = "2025-06-01"
+    frame["dataset_split"] = "test"
+    frame["actual_data_source"] = "test"
+    frame["is_censored_followup"] = False
+    frame["is_calibration_phase"] = frame["pitch_number_in_outing"].le(20)
+    warnings = warning_events(frame, pd.Series(predicted, index=frame.index))
+    assert warnings["warning_pitch"].tolist() == expected_pitches
+
+
+def test_headline_and_bootstrap_point_estimates_share_scoreless_outing_denominator():
+    rows = []
+    for game_pk, available in ((1, True), (2, False)):
+        for pitch in range(21, 36):
+            rows.append({
+                "game_pk": game_pk, "pitcher": 10, "game_date": "2025-06-01",
+                "dataset_split": "test", "pitch_number_in_outing": pitch,
+                "pa_number_in_outing": pitch // 4, "score_available": available,
+                "is_censored_followup": False, "is_calibration_phase": False,
+                "y_true_onset_in_horizon": pitch < 30,
+                "is_proposed_operating_alert": available and pitch in (21, 22),
+            })
+    frame = pd.DataFrame(rows)
+    episodes = pd.DataFrame({
+        "game_pk": [1, 2], "pitcher": [10, 10], "episode_id": [1, 1],
+        "onset_pitch": [30, 30], "onset_pa": [7, 7], "dataset_split": ["test", "test"],
+    })
+    metrics, _, _ = evaluate_warning_predictions(
+        frame, episodes, frame["is_proposed_operating_alert"], split="test"
+    )
+    bootstrap = paired_bootstrap_confidence_intervals(
+        frame, episodes, {"proposed": "is_proposed_operating_alert"},
+        n_bootstrap=50, seed=3,
+    )
+    estimates = bootstrap[
+        (bootstrap["resampling_unit"] == "outing") &
+        (bootstrap["comparison"] == "proposed")
+    ].set_index("metric")["estimate"]
+    assert metrics["total_qualified_outings"] == 2
+    assert metrics["outings_without_available_score"] == 1
+    assert metrics["evaluated_episodes_count"] == 2
+    for metric in ("episode_recall", "warning_precision", "false_warnings_per_outing"):
+        assert estimates[metric] == pytest.approx(metrics[metric])
+
+
+def test_bootstrap_point_precision_matches_evaluator_when_there_are_no_warnings():
+    frame = pd.DataFrame({
+        "game_pk": [1, 1], "pitcher": [10, 10], "game_date": ["2025-06-01"] * 2,
+        "dataset_split": ["test"] * 2, "pitch_number_in_outing": [21, 22],
+        "pa_number_in_outing": [6, 6], "score_available": [True, True],
+        "is_censored_followup": [False, False], "is_calibration_phase": [False, False],
+        "y_true_onset_in_horizon": [False, False],
+        "is_proposed_operating_alert": [False, False],
+    })
+    metrics, _, _ = evaluate_warning_predictions(
+        frame, pd.DataFrame(), frame["is_proposed_operating_alert"], split="test"
+    )
+    result = paired_bootstrap_confidence_intervals(
+        frame, pd.DataFrame(), {"proposed": "is_proposed_operating_alert"},
+        n_bootstrap=10, seed=1,
+    )
+    estimate = result[
+        (result["comparison"] == "proposed") & (result["metric"] == "warning_precision")
+    ]["estimate"].iloc[0]
+    assert estimate == metrics["warning_precision"] == 0.0
+
+
+def test_presentation_threshold_validation_detects_manifest_disagreement():
+    manifest = {
+        "resolved_runtime": {
+            "selected_models": {
+                "proposed": {"validation_selected_operating_threshold": 12.3456}
+            }
+        }
+    }
+    comparison = pd.DataFrame({
+        "Model Key": ["proposed"],
+        "Validation-Selected Threshold": [12.3456],
+    })
+    validate_operating_threshold_artifacts(manifest, comparison)
+    comparison.loc[0, "Validation-Selected Threshold"] = 4.0
+    with pytest.raises(ValueError, match="Operating threshold mismatch"):
+        validate_operating_threshold_artifacts(manifest, comparison)

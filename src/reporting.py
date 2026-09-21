@@ -34,6 +34,11 @@ def render_validation_report(output_dir: Path) -> Path:
     cohort_selection = _read_csv(output_dir, "cohort_selection.csv")
     ingestion_segments = _read_csv(output_dir, "ingestion_segments.csv")
     pitcher_evaluation = _read_csv(output_dir, "pitcher_model_evaluation.csv")
+    evaluation_coverage = _read_csv(output_dir, "evaluation_coverage.csv")
+    resolved = manifest.get("resolved_runtime", {})
+    allowance = resolved.get("threshold_selection", {}).get(
+        "allowed_maximum_false_warnings_per_outing", "unknown"
+    )
 
     unavailable_count = int(unavailable["pitch_count"].sum()) if "pitch_count" in unavailable else 0
     accounting = pd.DataFrame([{
@@ -63,7 +68,7 @@ def render_validation_report(output_dir: Path) -> Path:
     )
 
     report = (
-        "# Frozen 2025 temporal holdout report\n\n"
+        "# Locked retrospective 2025 holdout report\n\n"
         f"- Actual data source: `{metrics.get('actual_data_source', 'unknown')}`\n"
         "- Train: 2023; validation/development and threshold selection: 2024; frozen test: 2025.\n"
         f"- Warehouse coverage: {metrics['data_coverage']['observed_start']} through "
@@ -72,8 +77,9 @@ def render_validation_report(output_dir: Path) -> Path:
         f"- Exposure disclosure: {manifest['prior_2025_exposure_disclosure']}\n"
         "- The >=50-pitch outing rule is retrospective and cannot be known at a live pitch.\n"
         "- 2025 baselines update only from qualified outings on strictly earlier dates.\n"
-        "- Every model uses the same eligible observations and a 2024-selected threshold under "
-        "the 0.5 false-warnings-per-outing ceiling.\n"
+        "- Every model uses the same qualified-outing population and a 2024-selected threshold under "
+        f"an upper constraint of {allowance} false warnings per outing; this is not the achieved rate.\n"
+        "- Score-unavailable pitches cannot warn, break consecutive-warning runs, and do not remove their outing or collapse episodes from headline denominators.\n"
         "- Wider matching windows can mechanically increase recall and are not, alone, evidence of earlier prediction.\n"
         f"- Pitcher-clustered intervals use {metrics.get('test_pitchers_count', 'the test')} pitchers.\n\n"
         "## Dataset accounting\n\n" + _markdown(accounting) +
@@ -87,6 +93,7 @@ def render_validation_report(output_dir: Path) -> Path:
         "\n\n## Missing-data summary\n\n" + _markdown(missingness) +
         "\n\n## Warehouse integrity\n\n" + _markdown(integrity) +
         "\n\n## Frozen 2025 model comparison\n\n" + _markdown(comparison) +
+        "\n\n## Evaluation population, coverage, and headline denominators\n\n" + _markdown(evaluation_coverage) +
         "\n\n## Frozen 2025 results by pitcher\n\n" + _markdown(pitcher_evaluation) +
         "\n\n## Paired bootstrap confidence intervals\n\n" + _markdown(bootstrap) +
         "\n\n## Fixed-warning lead-time sensitivity\n\n" + _markdown(lead_time) +

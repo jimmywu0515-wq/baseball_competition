@@ -26,12 +26,16 @@ class CaseStudyVisualizer:
     """
     Generates diagnostic 4-panel case study plots for the 4 canonical outcomes.
     """
-    def __init__(self, output_dir: Optional[str] = None):
+    def __init__(self, output_dir: Optional[str] = None, msi_decay_alpha: float = 0.40,
+                 calibration_pitches: int = 20, collapse_xwoba_threshold: float = 0.450):
         if output_dir is None:
             self.output_dir = Path(__file__).resolve().parent.parent.parent / "outputs" / "case_studies"
         else:
             self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.msi_decay_alpha = float(msi_decay_alpha)
+        self.calibration_pitches = int(calibration_pitches)
+        self.collapse_xwoba_threshold = float(collapse_xwoba_threshold)
 
     def plot_case_study(self, 
                         outing_df: pd.DataFrame, 
@@ -66,11 +70,17 @@ class CaseStudyVisualizer:
         # Panel 1: Mechanics Stability Index (MSI) & Alert
         # -------------------------------------------------------------
         ax1 = axes[0]
-        msi = df.get("health_index", 100.0 * np.exp(-0.40 * df.get("mahalanobis_calibrated", 1.0))).values
+        msi = df.get(
+            "health_index",
+            100.0 * np.exp(-self.msi_decay_alpha * df.get("mahalanobis_calibrated", 1.0)),
+        ).values
         ax1.plot(pitch_nums, msi, color="#1e88e5", linewidth=2.5, label="Mechanics Stability Index (MSI 0-100)", zorder=3)
         ax1.axhline(60, color="#fb8c00", linestyle="--", alpha=0.7, label="Caution Threshold (60)")
         ax1.axhline(35, color="#e53935", linestyle="--", alpha=0.7, label="Danger Threshold (35)")
-        ax1.axvspan(0, 20, color="#b0bec5", alpha=0.2, label="Calibration Period (Pitches 1-20)")
+        ax1.axvspan(
+            0, self.calibration_pitches, color="#b0bec5", alpha=0.2,
+            label=f"Calibration Period (Pitches 1-{self.calibration_pitches})",
+        )
         ax1.set_ylim(0, 105)
         ax1.set_ylabel("MSI Score", fontsize=11, fontweight="bold")
         ax1.set_title(
@@ -95,7 +105,7 @@ class CaseStudyVisualizer:
         ax2 = axes[1]
         ax2.plot(pitch_nums, df["release_pos_x"], color="#43a047", linewidth=2, label="Release Pos X (ft)")
         ax2.plot(pitch_nums, df["release_pos_z"], color="#8e24aa", linewidth=2, label="Release Pos Z (ft)")
-        ax2.axvspan(0, 20, color="#b0bec5", alpha=0.2)
+        ax2.axvspan(0, self.calibration_pitches, color="#b0bec5", alpha=0.2)
         ax2.set_ylabel("Release Pos (ft)", fontsize=11, fontweight="bold")
 
         if first_alert:
@@ -121,7 +131,7 @@ class CaseStudyVisualizer:
         else:
             ax3.plot(pitch_nums, df["release_speed"].rolling(5, min_periods=1).mean(), color="#3949ab", linewidth=2.5, label="Rolling Pitch Velocity (mph)")
 
-        ax3.axvspan(0, 20, color="#b0bec5", alpha=0.2)
+        ax3.axvspan(0, self.calibration_pitches, color="#b0bec5", alpha=0.2)
         ax3.set_ylabel("Fastball Velo (mph)", fontsize=11, fontweight="bold")
 
         if first_alert:
@@ -144,8 +154,11 @@ class CaseStudyVisualizer:
         else:
             ax4.text(0.5, 0.5, "xwOBA unavailable", transform=ax4.transAxes,
                      ha="center", va="center", color="#757575")
-        ax4.axhline(0.450, color="#d32f2f", linestyle="--", label="Collapse Threshold (0.450)")
-        ax4.axvspan(0, 20, color="#b0bec5", alpha=0.2)
+        ax4.axhline(
+            self.collapse_xwoba_threshold, color="#d32f2f", linestyle="--",
+            label=f"Collapse Threshold ({self.collapse_xwoba_threshold:.3f})",
+        )
+        ax4.axvspan(0, self.calibration_pitches, color="#b0bec5", alpha=0.2)
         ax4.set_ylabel("Rolling xwOBA", fontsize=11, fontweight="bold")
         ax4.set_xlabel("Pitch Number in Outing", fontsize=12, fontweight="bold")
 

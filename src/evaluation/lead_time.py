@@ -52,6 +52,7 @@ def fixed_warning_horizon_analysis(
     model_predictions: Dict[str, str],
     horizons: Iterable[int] = (10, 15, 20, 25),
     split: str = "test",
+    model_availability: Optional[Dict[str, str]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Change only event-matching horizon; warnings and thresholds remain fixed."""
     horizons = sorted(set(map(int, horizons)))
@@ -60,9 +61,9 @@ def fixed_warning_horizon_analysis(
     # applied below instead of inheriting the default 15-pitch label mask.
     eligibility_frame = df.copy()
     eligibility_frame["is_censored_followup"] = False
-    eligible = eligibility_frame.loc[eligible_pitch_mask(eligibility_frame, split)].copy()
     episodes = episodes_for_split(episodes_df, split)
-    valid_outings = eligible[["game_pk", "pitcher"]].drop_duplicates()
+    split_frame = eligibility_frame[eligibility_frame["dataset_split"].eq(split)].copy()
+    valid_outings = split_frame[["game_pk", "pitcher"]].drop_duplicates()
     if not episodes.empty:
         episodes = episodes.merge(valid_outings, on=["game_pk", "pitcher"], how="inner")
     outing_end = df.groupby(["game_pk", "pitcher"])["pitch_number_in_outing"].max().to_dict()
@@ -70,32 +71,22 @@ def fixed_warning_horizon_analysis(
     result_rows = []
     match_frames = []
     distribution_rows = []
-    eligible["available_followup_pitches"] = [
-        max(0, int(outing_end.get((row.game_pk, row.pitcher), row.pitch_number_in_outing)
-                   - row.pitch_number_in_outing))
-        for row in eligible.itertuples()
-    ]
-
-    def evaluable_episodes(pitch_population: pd.DataFrame, horizon: int) -> pd.DataFrame:
-        if episodes.empty:
-            return episodes
-        pitches_by_outing = {
-            key: group["pitch_number_in_outing"].to_numpy()
-            for key, group in pitch_population.groupby(["game_pk", "pitcher"], sort=False)
-        }
-        keep = []
-        for idx, episode in episodes.iterrows():
-            pitches = pitches_by_outing.get((episode["game_pk"], episode["pitcher"]), np.array([]))
-            if np.any((pitches < episode["onset_pitch"]) &
-                      (pitches >= episode["onset_pitch"] - horizon)):
-                keep.append(idx)
-        return episodes.loc[keep]
-
-    common_pitch_population = eligible[eligible["available_followup_pitches"].ge(max_horizon)]
-    common_episode_population = evaluable_episodes(common_pitch_population, max_horizon)
-
     for model_key, prediction_col in model_predictions.items():
-        fixed_warnings = warning_events(eligible, eligible[prediction_col])
+        availability_col = (model_availability or {}).get(model_key)
+        availability = (
+            eligibility_frame[availability_col].notna()
+            if availability_col and availability_col in eligibility_frame
+            else None
+        )
+        eligible = eligibility_frame.loc[
+            eligible_pitch_mask(eligibility_frame, split, availability=availability)
+        ].copy()
+        available_outing_count = len(eligible[["game_pk", "pitcher"]].drop_duplicates())
+        fixed_warnings = warning_events(
+            split_frame,
+            split_frame[prediction_col],
+            availability=availability.reindex(split_frame.index) if availability is not None else None,
+        )
         if not fixed_warnings.empty:
             fixed_warnings["available_followup_pitches"] = [
                 max(0, int(outing_end.get((row.game_pk, row.pitcher), row.warning_pitch) - row.warning_pitch))
@@ -108,16 +99,18 @@ def fixed_warning_horizon_analysis(
             complete = fixed_warnings[
                 fixed_warnings["available_followup_pitches"].ge(horizon)
             ] if not fixed_warnings.empty else fixed_warnings
-            complete_pitch_population = eligible[eligible["available_followup_pitches"].ge(horizon)]
-            horizon_episodes = evaluable_episodes(complete_pitch_population, horizon)
+            horizon_episodes = episodes
             matches = _match_fixed_warnings(complete, horizon_episodes, horizon)
             common_matches = _match_fixed_warnings(
-                common_warnings, common_episode_population, horizon
+                common_warnings, episodes, horizon
             )
             matched_warning_count = len(matches)
             result_rows.append({
                 "model_key": model_key,
                 "matching_horizon": horizon,
+                "qualified_outing_count": int(len(valid_outings)),
+                "score_available_outing_count": int(available_outing_count),
+                "score_available_pitch_count": int(len(eligible)),
                 "frozen_warning_count": int(len(fixed_warnings)),
                 "complete_followup_warning_count": int(len(complete)),
                 "censored_warning_count": int(len(fixed_warnings) - len(complete)),
@@ -129,13 +122,13 @@ def fixed_warning_horizon_analysis(
                 ),
                 "warning_precision_complete_followup": float(matched_warning_count / len(complete)) if len(complete) else np.nan,
                 "common_followup_warning_count": int(len(common_warnings)),
-                "common_followup_episode_count": int(len(common_episode_population)),
+                "common_followup_episode_count": int(len(episodes)),
                 "common_followup_matched_episode_count": int(len(common_matches)),
                 "common_followup_episode_recall": (
-                    float(len(common_matches) / len(common_episode_population))
-                    if len(common_episode_population) else np.nan
+                    float(len(common_matches) / len(episodes))
+                    if len(episodes) else np.nan
                 ),
-                "actual_data_source": ",".join(sorted(map(str, eligible.get(
+                "actual_data_source": ",".join(sorted(map(str, split_frame.get(
                     "actual_data_source", pd.Series(["unknown"])
                 ).dropna().unique()))),
             })

@@ -37,7 +37,8 @@ def main() -> None:
         blended_xwoba_threshold=float(config["labels"]["blended_xwoba_threshold"]),
         min_barrels_in_window=int(config["labels"]["min_barrels_in_window"]),
         min_bb_hbp_in_window=int(config["labels"]["min_bb_hbp_in_window"]),
-        horizon_pitches=int(config["evaluation"]["prediction_horizon_pitches"]),
+        horizon_pitches=int(config["labels"]["prediction_horizon_pitches"]),
+        horizon_pas=int(config["labels"]["prediction_horizon_pas"]),
     )
     labeled_frames = []
     episode_frames = []
@@ -51,6 +52,10 @@ def main() -> None:
     sensitivity, matches, distribution = fixed_warning_horizon_analysis(
         labeled, episodes, MODEL_PREDICTIONS,
         horizons=config["evaluation"]["sensitivity_horizons"], split="test",
+        model_availability={
+            "proposed": "score_proposed_cusum", "contextual": "score_contextual",
+            "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
+        },
     )
     actual_source = str(scored["actual_data_source"].dropna().iloc[0])
     for frame in (matches, distribution):

@@ -37,7 +37,7 @@ The ≥50-pitch outing filter is retrospective: final outing length is unknown d
 
 Means and covariance matrices are estimated separately for each pitcher × pitch type before each outing. Any pitch type with enough completed historical observations can be scored; the `is_primary_pitch_type` descriptor does not gate scoring. During 2025, a baseline may update only with qualified outings on strictly earlier dates. Same-day and future outings are excluded from the baseline cutoff.
 
-Pitches 1–20 are calibration-only. They receive no Mahalanobis score, MSI, CUSUM update, or warning. Missing features, insufficient prior starts, insufficient pitch-type observations, and insufficient calibration are explicit unavailable states. The same `score_available` policy is used by detection, evaluation, ablation, and display.
+The configured first 20 pitches are calibration-only. They receive no Mahalanobis score, MSI, CUSUM update, or warning. Missing features, insufficient prior starts, insufficient pitch-type observations, and insufficient calibration are explicit unavailable states. The resolved calibration length and MSI decay parameter are recorded in the run manifest.
 
 Behavioral tests verify that:
 
@@ -51,15 +51,19 @@ Behavioral tests verify that:
 
 ## Fair model comparison
 
-MSI+CUSUM, the contextual model, pitch count, and pitch-type-specific velocity drop use the same eligible observations and one-to-one warning–episode matcher. Consecutive flagged pitches form one warning. A warning matches at most one episode when it occurs 1–15 pitches before onset.
+MSI+CUSUM, the contextual model, pitch count, and pitch-type-specific velocity drop use one authoritative population: every qualified outing in the evaluation split. An outing remains in the denominator when it has no available score; its collapse episodes remain eligible to count as misses, while unavailable pitches cannot generate warnings. Pitch- and outing-level score coverage are reported per model.
+
+The one-to-one warning–episode matcher uses the configured matching horizon. Consecutive flagged pitches form one warning only when they are adjacent in the original within-outing pitch sequence. An unavailable pitch, a pitch-number gap, the calibration boundary, or an outing boundary breaks warning continuity; filtering unavailable rows never makes separated warnings adjacent.
 
 Every model chooses its threshold on 2024 under an upper bound of 0.5 false warnings per outing—approximately one unmatched warning every two starts. The selected operating point is distinct from the allowance itself. Every validation candidate is exported and plotted, and the frozen operating point is shown on 2025 without retuning.
+
+The CUSUM internal accumulation/diagnostic parameter, the validation-selected operating threshold applied to the CUSUM statistic, and the false-warning allowance are separate quantities. The dashboard and report load all three from the frozen run manifest and validate the displayed operating thresholds against the model-comparison artifact.
 
 The velocity benchmark calculates four-seamer (`FF`), sinker (`SI`), and cutter (`FC`) drops independently and assigns scores by row index. A velocity risk ratio below one is not evidence that velocity is a lagging indicator.
 
 ## Uncertainty and lead time
 
-Paired bootstrap intervals resample complete 2025 outings and use the identical sampled outings for every model. Frozen thresholds are never reselected within bootstrap samples. The output reports 95% intervals for episode recall, warning precision, false warnings per outing, risk ratio, and direct proposed-minus-comparator differences. Zero-denominator replicate frequency is reported explicitly.
+Paired bootstrap intervals resample the same complete qualified 2025 outings used by the headline evaluator and use identical sampled outings for every model. Frozen thresholds are never reselected within bootstrap samples. The output reports 95% intervals for episode recall, warning precision, false warnings per outing, risk ratio, and direct proposed-minus-comparator differences. Zero-denominator replicate frequency is reported explicitly, and bootstrap point estimates are tested against the ordinary evaluator before resampling.
 
 A pitcher-clustered sensitivity analysis resamples pitchers and includes all their outings. Per-pitcher results are exported so pooled performance can be checked for dependence on a few pitchers.
 
@@ -140,9 +144,11 @@ gcloud storage ls gs://YOUR_PROJECT_ID-baseball-lakehouse/results/real_data/
 bq ls YOUR_PROJECT_ID:baseball_analytics
 ```
 
-## Implementation status and completion roadmap
+## Implementation status and reproducibility checklist
 
-The expanded cohort architecture and data foundation are fully prepared: **40 pitchers** were selected deterministically using only 2023–2024 MLB records (zero 2025 data leakage), all 40 passed the downstream qualification rule, and 267,983 raw pitches were audited across 115 loaded segments and 5 independently verified empty seasons.
+The expanded evaluation completed locally on 2026-09-21: **40 pitchers** were selected deterministically using only 2023–2024 MLB records, all 40 passed the downstream qualification rule, and 267,983 raw pitches were audited across 115 loaded segments and 5 independently verified empty seasons. The qualifier retained 237,156 pitches across 2,599 outings.
+
+On the locked retrospective 2025 holdout, the proposed system used a 2024-selected threshold of `211.9586` across 708 qualified outings and 1,581 collapse episodes. Episode recall was `0.0968`, warning precision was `0.3326`, and false warnings per outing were `0.4336`. These results are observational and must retain the prior-2025-exposure disclosure above.
 
 ### Milestone tracking
 
@@ -152,13 +158,13 @@ The expanded cohort architecture and data foundation are fully prepared: **40 pi
 | **2. Statcast Ingestion & Verification** | `outputs/cohort_expansion/ingestion_segments.csv` | **Completed** | 120 segments audited (115 loaded, 5 verified zero-pitch seasons via official MLB Stats API). |
 | **3. Resumable GCP Cloud Architecture** | `scripts/deploy_gcp.sh`, `scripts/cloud_entrypoint.py` | **Completed** | Dual-stage Cloud Run Jobs (`baseball-prepare` & `baseball-evaluate`) with GCS checkpointing & BigQuery publishing. |
 | **4. Vectorized Event-Matching Pipeline** | `src/evaluation/protocol.py`, `src/anomaly_scorer/` | **Completed** | Vectorized CUSUM/Mahalanobis scoring eliminating downstream evaluation bottlenecks. |
-| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` / `baseball-evaluate` | **Operational** | End-to-end execution of Mahalanobis scoring, CUSUM detection, and 1,000 paired bootstrap iterations. |
-| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Operational** | Strict referential integrity, pitch-key uniqueness, and regular-season validation before publication. |
-| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Final Gating** | Replaces 6-pitcher baseline metrics with 40-pitcher results upon end-to-end completion. |
+| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` / `baseball-evaluate` | **Completed** | End-to-end Mahalanobis scoring, CUSUM detection, sensitivity analyses, and 1,000 paired bootstrap iterations completed. |
+| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Passed** | Eight persisted-warehouse checks pass, including referential integrity, pitch-key uniqueness, source, season, and regular-season scope. |
+| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Completed** | The prior 6-pitcher artifacts were replaced by the verified 40-pitcher locked retrospective holdout results. |
 
 ---
 
-### Step-by-step completion protocol
+### Step-by-step reproduction protocol
 
 #### Step 1: Deploy & verify GCP infrastructure
 Deploy the dual-stage serverless pipeline to your GCP project:
@@ -202,11 +208,11 @@ bq query --use_legacy_sql=false 'SELECT * FROM `baseball_analytics.warehouse_int
 - Referential integrity check confirms 100% of qualified pitches map cleanly to raw Statcast keys.
 - No unverified empty segments exist.
 
-#### Step 4: Promote final expanded-cohort metrics
-Upon successful completion of the end-to-end run:
+#### Step 4: Validate and publish regenerated metrics
+After a successful rerun:
 1. Validate that `mart_model_evaluation` and `metrics_summary.json` reflect the 40-pitcher cohort size (`cohort_size: 40`).
-2. Update the published model comparison table in `README.md` and `dashboard/app.py` with the new 40-pitcher metrics.
-3. Synchronize outputs to BigQuery and launch the updated coach dashboard.
+2. Confirm bootstrap point estimates match the ordinary evaluator and dashboard thresholds match `protocol_manifest.json`.
+3. Synchronize outputs to BigQuery and launch the dashboard, which reads thresholds and model results directly from the frozen artifacts.
 
 ## Main modules
 

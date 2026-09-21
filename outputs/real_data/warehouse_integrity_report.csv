@@ -1,9 +1,9 @@
 check_name,status,row_count,details,actual_data_source,checked_at_utc
-raw_season_2023,PASS,17260,2023-03-30 00:00:00 through 2023-09-28 00:00:00,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-raw_season_2024,PASS,18312,2024-03-28 00:00:00 through 2024-09-29 00:00:00,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-raw_season_2025,PASS,13323,2025-03-27 00:00:00 through 2025-09-28 00:00:00,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-raw_pitch_key_uniqueness,PASS,48895,zero duplicate pitch keys,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-gold_score_label_alignment,PASS,48135,identical ordered pitch keys,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-qualified_raw_referential_integrity,PASS,48135,all qualified keys exist in raw,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-game_scope,PASS,48895,MLB regular season only,mlb_statcast,2026-09-16T20:38:49.918133+00:00
-duckdb_reload,PASS,48895,all production tables reloaded and revalidated,mlb_statcast,2026-09-16T20:38:49.933886+00:00
+raw_season_2023,PASS,93476,2023-03-30 00:00:00 through 2023-10-01 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+raw_season_2024,PASS,89924,2024-03-21 00:00:00 through 2024-09-29 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+raw_season_2025,PASS,65996,2025-03-27 00:00:00 through 2025-09-28 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+raw_pitch_key_uniqueness,PASS,249396,zero duplicate pitch keys,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+gold_score_label_alignment,PASS,237156,identical ordered pitch keys,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+qualified_raw_referential_integrity,PASS,237156,all qualified keys exist in raw,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+game_scope,PASS,249396,MLB regular season only,mlb_statcast,2026-09-21T19:42:21.742115+00:00
+duckdb_reload,PASS,249396,all production tables reloaded and revalidated,mlb_statcast,2026-09-21T19:42:21.767613+00:00

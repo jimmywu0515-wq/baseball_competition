@@ -30,4 +30,12 @@ def load_project_config(path: Optional[Path] = None) -> Dict[str, Any]:
             raise ValueError("cohort_selection.seasons must contain only pre-2025 seasons.")
         if int(selection["target_size"]) < len(set(config["ingestion"]["pitcher_ids"])):
             raise ValueError("cohort_selection.target_size cannot be smaller than retained pitcher_ids.")
+    label_horizon = int(config["labels"]["prediction_horizon_pitches"])
+    matching_horizon = int(config["evaluation"]["warning_matching_horizon_pitches"])
+    if label_horizon <= 0 or matching_horizon <= 0:
+        raise ValueError("Label and warning-matching horizons must be positive.")
+    if int(baseline["intra_game_calibration_pitches"]) < 0:
+        raise ValueError("baseline.intra_game_calibration_pitches cannot be negative.")
+    if not 0.0 < float(config["anomaly"]["health_index_decay_alpha"]):
+        raise ValueError("anomaly.health_index_decay_alpha must be positive.")
     return config

@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler
 from src.evaluation.protocol import (
     assign_temporal_split,
     eligible_pitch_mask,
+    evaluation_opportunity_mask,
     evaluate_warning_predictions,
     select_operating_threshold,
     threshold_tradeoff_curve,
@@ -27,25 +28,28 @@ class BaselineComparator:
     """Freeze operating points on validation, then compare systems on test."""
 
     def __init__(self, velocity_drop_mph: float = 1.5, pitch_count_thresh: int = 85,
-                 horizon_pitches: int = 15, false_warnings_per_outing: float = 0.5):
+                 horizon_pitches: int = 15, false_warnings_per_outing: float = 0.5,
+                 calibration_pitches: int = 20):
         self.vel_drop_mph = velocity_drop_mph
         self.pitch_count_thresh = pitch_count_thresh
         self.horizon_pitches = horizon_pitches
         self.false_warnings_per_outing = false_warnings_per_outing
+        self.calibration_pitches = calibration_pitches
         self.threshold_curves = pd.DataFrame()
         self.warning_records = pd.DataFrame()
         self.match_records = pd.DataFrame()
         self.frozen_thresholds: Dict[str, float] = {}
+        self.validation_metrics: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
-    def _velocity_drop_scores(df: pd.DataFrame) -> pd.Series:
+    def _velocity_drop_scores(df: pd.DataFrame, calibration_pitches: int = 20) -> pd.Series:
         """Compute index-aligned velocity drop separately for FF, SI, and FC."""
         scores = pd.Series(np.nan, index=df.index, dtype=float)
         for _, outing in df.groupby(["game_pk", "pitcher"], sort=False):
             outing = outing.sort_values("pitch_number_in_outing")
             for pitch_type in PRIMARY_FASTBALLS:
                 pt = outing[outing["pitch_type"].eq(pitch_type)]
-                early = pt[pt["pitch_number_in_outing"].le(20)]["release_speed"].dropna()
+                early = pt[pt["pitch_number_in_outing"].le(calibration_pitches)]["release_speed"].dropna()
                 if len(early) < 2:
                     continue
                 rolling = pt["release_speed"].rolling(5, min_periods=3).mean()
@@ -62,7 +66,7 @@ class BaselineComparator:
         return features.fillna(0.0)
 
     def _add_context_scores(self, df: pd.DataFrame) -> pd.Series:
-        train_mask = eligible_pitch_mask(df, "train")
+        train_mask = evaluation_opportunity_mask(df, "train")
         if not train_mask.any():
             raise ValueError("No eligible 2023 training pitches; contextual model cannot be fit leakage-free.")
         y_train = df.loc[train_mask, "y_true_onset_in_horizon"].astype(int)
@@ -79,7 +83,7 @@ class BaselineComparator:
     @staticmethod
     def _pitch_statistics(df: pd.DataFrame, predictions: pd.Series, score_col: str,
                           split: str = "test") -> Dict[str, float]:
-        mask = eligible_pitch_mask(df, split)
+        mask = eligible_pitch_mask(df, split, availability=df[score_col].notna())
         part = df.loc[mask]
         y_true = part["y_true_onset_in_horizon"].astype(int).to_numpy()
         y_pred = predictions.reindex(part.index).fillna(False).astype(bool).to_numpy()
@@ -117,7 +121,7 @@ class BaselineComparator:
             collapse_episodes_df = assign_temporal_split(collapse_episodes_df)
 
         df["score_proposed_cusum"] = pd.to_numeric(df["cusum_stat"], errors="coerce")
-        df["score_velocity_drop"] = self._velocity_drop_scores(df)
+        df["score_velocity_drop"] = self._velocity_drop_scores(df, self.calibration_pitches)
         df["score_pitch_count"] = pd.to_numeric(df["pitch_number_in_outing"], errors="coerce")
         df["score_contextual"] = self._add_context_scores(df)
 
@@ -143,6 +147,7 @@ class BaselineComparator:
             )
             self.frozen_thresholds[key] = threshold
             validation_by_model[key] = validation_metrics
+            self.validation_metrics[key] = validation_metrics
             curve = threshold_tradeoff_curve(
                 df, collapse_episodes_df, score_col,
                 horizon_pitches=self.horizon_pitches, split="validation",
@@ -170,7 +175,8 @@ class BaselineComparator:
             df[prediction_col] = df[score_col].ge(threshold) & df[score_col].notna()
             test_metrics, warnings, matches = evaluate_warning_predictions(
                 df, collapse_episodes_df, df[prediction_col],
-                horizon_pitches=self.horizon_pitches, split="test"
+                horizon_pitches=self.horizon_pitches, split="test",
+                availability=df[score_col].notna(),
             )
             test_metrics.update(self._pitch_statistics(df, df[prediction_col], score_col))
             test_metrics["operating_threshold"] = threshold
@@ -179,7 +185,7 @@ class BaselineComparator:
             )
             test_metrics["evaluation_split"] = "test"
             test_metrics["actual_data_sources"] = sorted(
-                map(str, df.loc[eligible_pitch_mask(df, "test"), "actual_data_source"].dropna().unique())
+                map(str, df.loc[evaluation_opportunity_mask(df, "test"), "actual_data_source"].dropna().unique())
             ) if "actual_data_source" in df else ["unknown"]
             metrics_by_model[key] = test_metrics
             if not warnings.empty:
@@ -200,7 +206,14 @@ class BaselineComparator:
                 return np.nan if not np.isfinite(value) else round(float(value), digits)
 
             rows.append({
+                "Model Key": key,
                 "Model / System": display_name,
+                "Validation Episode Recall": fmt(validation_metrics.get("episode_recall", np.nan)),
+                "Validation Warning Precision": fmt(validation_metrics.get("warning_precision", np.nan)),
+                "Validation False Warnings / Outing": fmt(
+                    validation_metrics.get("false_warnings_per_outing", np.nan)
+                ),
+                "Allowed Maximum False Warnings / Outing": self.false_warnings_per_outing,
                 "Test Episode Recall": fmt(test_metrics["episode_recall"]),
                 "Test Warning Precision": fmt(test_metrics["warning_precision"]),
                 "Test False Warnings / Outing": fmt(test_metrics["false_warnings_per_outing"]),
@@ -208,9 +221,12 @@ class BaselineComparator:
                 "Test Pitch PR-AUC": fmt(test_metrics["pitch_pr_auc"]),
                 "Test Risk Ratio (Alert vs No Alert)": fmt(test_metrics["risk_ratio_alert_vs_no_alert"], 2),
                 "Validation-Selected Threshold": fmt(threshold, 4),
-                "Validation False Warnings / Outing": fmt(
-                    test_metrics["validation_false_warnings_per_outing"]
-                ),
+                "Test Qualified Outings": test_metrics["total_qualified_outings"],
+                "Test Outings With Available Score": test_metrics["outings_with_available_score"],
+                "Test Outings Without Available Score": test_metrics["outings_without_available_score"],
+                "Test Pitch Scoring Coverage": fmt(test_metrics["pitch_level_scoring_coverage"]),
+                "Test Outing Scoring Coverage": fmt(test_metrics["outing_level_scoring_coverage"]),
+                "Test Evaluated Episodes": test_metrics["evaluated_episodes_count"],
                 "Actual Data Source": ", ".join(test_metrics["actual_data_sources"]),
                 "Interpretation": interpretation,
             })

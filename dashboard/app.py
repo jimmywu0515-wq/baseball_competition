@@ -21,6 +21,11 @@ if str(app_root) not in sys.path:
     sys.path.insert(0, str(app_root))
 
 from src.storage.adapter import StorageManager
+from src.presentation import (
+    load_protocol_manifest,
+    selected_model_settings,
+    validate_operating_threshold_artifacts,
+)
 
 st.set_page_config(
     page_title="MLB Pitcher Mechanics Stability Index (MSI) Dashboard",
@@ -73,13 +78,23 @@ def load_data():
     labels_df = sm.load_table("fact_collapse_labels", layer="gold")
     alerts_df = sm.load_table("fact_alert_events", layer="gold")
     comp_df = sm.load_table("mart_model_evaluation", layer="gold")
-    return scored_df, labels_df, alerts_df, comp_df
+    manifest = load_protocol_manifest(app_root / "outputs" / "real_data")
+    validate_operating_threshold_artifacts(manifest, comp_df)
+    return scored_df, labels_df, alerts_df, comp_df, manifest
 
 
 st.sidebar.title("⚾ 投手機制穩定度監控系統")
 st.sidebar.caption("Mechanics Stability Index (MSI) — 基於微觀物理特徵漂移之預警系統")
 
-scored_df, labels_df, alerts_df, comp_df = load_data()
+scored_df, labels_df, alerts_df, comp_df, run_manifest = load_data()
+resolved_runtime = run_manifest["resolved_runtime"]
+proposed_settings = selected_model_settings(run_manifest, "proposed")
+operating_threshold = proposed_settings["validation_selected_operating_threshold"]
+cusum_internal_h = resolved_runtime["detectors"]["cusum"]["internal_alert_h"]
+false_warning_allowance = resolved_runtime["threshold_selection"][
+    "allowed_maximum_false_warnings_per_outing"
+]
+calibration_pitches = resolved_runtime["baseline"]["calibration_pitches"]
 
 if scored_df.empty:
     st.error("No data found in lakehouse. Please run `scripts/run_full_pipeline.py` first.")
@@ -180,7 +195,7 @@ with col1:
         "機制穩定度指數 MSI (0–100)",
         f"{msi_val:.1f}" if np.isfinite(msi_val) else "Unavailable",
         f"{delta_msi:+.1f} vs baseline" if delta_msi is not None else score_status,
-        help="Mechanics Stability Index = 100 × exp(−α·D_M). Higher = more stable. Scoring starts at pitch 21."
+        help=f"Mechanics Stability Index = 100 × exp(−α·D_M). Higher = more stable. Calibration uses the first {calibration_pitches} pitches."
     )
 
 with col2:
@@ -199,7 +214,11 @@ with col3:
 
 with col4:
     cusum_val = float(curr_pitch.get("cusum_stat", 0.0))
-    st.metric("CUSUM 累積漂移量", f"{cusum_val:.2f}", "Threshold: 4.0")
+    st.metric(
+        "CUSUM 累積漂移量", f"{cusum_val:.2f}",
+        f"Frozen operating threshold: {operating_threshold:.3f}",
+        help=f"Validation-selected operating threshold. Internal detector diagnostic h={cusum_internal_h:g} is a separate parameter.",
+    )
 
 st.markdown("---")
 
@@ -224,10 +243,10 @@ with tab1:
             marker=dict(size=6)
         ))
         fig_ts.add_vrect(
-            x0=1, x1=20,
+            x0=1, x1=calibration_pitches,
             fillcolor="rgba(255,235,59,0.08)",
             line_width=0,
-            annotation_text="Calibration Zone (Pitches 1–20)",
+            annotation_text=f"Calibration Zone (Pitches 1–{calibration_pitches})",
             annotation_position="top left",
             annotation_font_size=10
         )
@@ -293,7 +312,10 @@ with tab1:
             name="CUSUM Statistic",
             line=dict(color="#66bb6a", width=2)
         ))
-        fig_cusum.add_hline(y=4.0, line_dash="dash", line_color="#ef5350", annotation_text="Alert Threshold (4.0)")
+        fig_cusum.add_hline(
+            y=operating_threshold, line_dash="dash", line_color="#ef5350",
+            annotation_text=f"Frozen 2024 operating threshold ({operating_threshold:.3f})",
+        )
         fig_cusum.update_layout(
             title="CUSUM 變點累積漂移量 (Change-Point Detection)",
             xaxis_title="Pitch #", yaxis_title="CUSUM",
@@ -388,7 +410,8 @@ with tab3:
     else:
         st.caption(
             "Frozen 2025 test results. Models train on 2023 and operating thresholds are selected "
-            "on 2024 under the same 0.5 false-warnings-per-outing ceiling."
+            f"on 2024 under the same {false_warning_allowance:g} false-warnings-per-outing upper constraint; "
+            "the achieved validation rate is reported separately."
         )
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
 

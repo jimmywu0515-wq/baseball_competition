@@ -56,9 +56,13 @@ anomaly:
 changepoint:
   detector: "cusum"                 # cusum | ewma | hybrid
   cusum_slack_k: 0.5                # Slack value (in std deviations)
-  cusum_threshold_h: 4.5            # Decision threshold (in std deviations)
+  cusum_internal_alert_h: 4.5       # Detector diagnostic threshold; not the selected operating threshold
+  cusum_reference_mean: 1.0
+  cusum_reference_std: 0.5
   ewma_lambda: 0.20                 # EWMA smoothing factor
-  ewma_threshold_sigma: 2.8         # EWMA control limit in std devs
+  ewma_control_limit_sigma: 2.8     # Internal EWMA control limit in std devs
+  ewma_reference_mean: 1.0
+  ewma_reference_std: 0.5
   consecutive_anomaly_pitches: 3    # Alternative simple rule: N consecutive pitches > 2.0 sigma
 
 # Label Definition for Collapse (§5 Step 6 - Strictly isolated from features)
@@ -68,13 +72,14 @@ labels:
   blended_xwoba_threshold: 0.450
   min_barrels_in_window: 2
   min_bb_hbp_in_window: 2
+  prediction_horizon_pitches: 15    # Future-outcome label horizon
+  prediction_horizon_pas: 3
 
 # Evaluation & Baseline Comparisons (§5 Step 7)
 evaluation:
   naive_velocity_drop_mph: 1.5      # Naive alert when rolling velocity drops >= 1.5 mph
   naive_pitch_count_threshold: 85   # Naive alert when pitch count >= 85
-  prediction_horizon_pitches: 15    # Evaluate collapse occurrence within next 15 pitches of alert
-  prediction_horizon_pas: 3         # Evaluate collapse occurrence within next 3 PAs of alert
+  warning_matching_horizon_pitches: 15 # Match frozen warnings to later episode onsets
   false_warnings_per_outing: 0.5    # Shared validation allowance for every model
   train_end: "2023-12-31"
   validation_end: "2024-12-31"

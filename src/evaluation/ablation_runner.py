@@ -20,10 +20,12 @@ logger = logging.getLogger(__name__)
 
 class AblationRunner:
     def __init__(self, base_df: pd.DataFrame, collapse_episodes_df: Optional[pd.DataFrame] = None,
-                 false_warnings_per_outing: float = 0.5):
+                 false_warnings_per_outing: float = 0.5,
+                 horizon_pitches: int = 15):
         self.df = base_df.copy()
         self.episodes = collapse_episodes_df if collapse_episodes_df is not None else pd.DataFrame()
         self.false_warnings_per_outing = false_warnings_per_outing
+        self.horizon_pitches = horizon_pitches
 
     @staticmethod
     def _euclidean_score(df: pd.DataFrame, columns) -> pd.Series:
@@ -60,11 +62,12 @@ class AblationRunner:
         for name, score_col in score_cols.items():
             threshold, validation_metrics = select_operating_threshold(
                 working, self.episodes, score_col, self.false_warnings_per_outing,
-                horizon_pitches=15, split="validation"
+                horizon_pitches=self.horizon_pitches, split="validation"
             )
             predictions = working[score_col].ge(threshold) & working[score_col].notna()
             metrics, _, _ = evaluate_warning_predictions(
-                working, self.episodes, predictions, horizon_pitches=15, split="test"
+                working, self.episodes, predictions,
+                horizon_pitches=self.horizon_pitches, split="test"
             )
             part = working.loc[test_mask, [score_col, "y_true_onset_in_horizon"]].dropna()
             if not part.empty and part["y_true_onset_in_horizon"].nunique() > 1:
