@@ -8,7 +8,7 @@ import shutil
 import uuid
 
 from scripts.run_full_pipeline import _promote_staged_outputs, _write_protocol_manifest
-from src.evaluation.ablation_runner import AblationRunner
+from src.evaluation.ablation_runner import verify_full_feature_parity
 from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
 from src.evaluation.protocol import (
     build_evaluation_universe, eligible_pitch_mask, evaluate_warning_predictions,
@@ -124,13 +124,19 @@ def test_ablation_mismatch_and_failed_promotion_preserve_published():
     frame = _rows(games=(1,))
     frame["score_proposed_cusum"] = [0, 1, 2, 3]
     frame["is_proposed_operating_alert"] = [False, False, True, True]
-    runner = AblationRunner(frame)
     metrics, _, _ = evaluate_warning_predictions(frame, pd.DataFrame(), frame["is_proposed_operating_alert"],
                                                   availability=pd.Series(True, index=frame.index))
-    metrics["operating_threshold"] = 2.0
     wrong = dict(metrics, total_qualified_outings=3)
-    with pytest.raises(ValueError, match="parity failed"):
-        runner.run_feature_ablations(2.0, wrong)
+    with pytest.raises(ValueError, match="Parity mismatch"):
+        verify_full_feature_parity(pd.DataFrame([{
+            "Feature Subset": "Full Micro-Mechanics Suite",
+            "Test Episode Recall": 0.9,
+            "Test Warning Precision": metrics["warning_precision"],
+            "Test False Warnings / Outing": metrics["false_warnings_per_outing"],
+            "Validation-Selected Threshold": np.nan,
+        }]), {"episode_recall": 0.1,
+              "warning_precision": wrong["warning_precision"],
+              "false_warnings_per_outing": wrong["false_warnings_per_outing"]})
     root = Path(__file__).resolve().parents[1] / "outputs"
     temp_root = root / f".promotion_test_{uuid.uuid4().hex}"
     assert temp_root.resolve().is_relative_to(root.resolve())

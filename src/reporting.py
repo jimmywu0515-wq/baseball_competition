@@ -68,6 +68,45 @@ def render_validation_report(output_dir: Path) -> Path:
         if {"score_status", "pitch_count"}.issubset(unavailable.columns) else pd.DataFrame()
     )
 
+    # Scientific interpretation section
+    interpretation_section = (
+        "## Scientific Interpretation and Findings\n\n"
+        "> **Central Conclusion:**\n"
+        "> The mechanical warning system has not demonstrated improved predictive performance "
+        "over simple contextual or workload baselines. It detects more episodes than the evaluated "
+        "velocity-drop benchmark, with a higher false-warning burden. Mechanical drift summaries may "
+        "support interpretation, but their additional value for coaching decisions remains unvalidated.\n\n"
+        "### Key Statistical Findings\n\n"
+        "1. **Risk Ratio Confidence Intervals:** In the expanded cohort holdout analysis, the proposed "
+        "risk-ratio confidence interval includes 1.0 (estimate: ~1.058), indicating that the current evaluation "
+        "does not establish increased collapse risk after an alert under that analysis.\n"
+        "2. **Comparison with Contextual Baseline:** Proposed-minus-contextual confidence intervals include 0 "
+        "for the primary reported comparisons. The evaluation has not demonstrated predictive superiority over "
+        "the contextual baseline (pitch count + times through order + inning). Note that failing to reject the null "
+        "is not proof of equivalence.\n"
+        "3. **Proposed Recall vs. Pitch Count:** Proposed recall is lower than pitch-count recall. In the expanded "
+        "evaluation, the outing-bootstrap difference estimate is -0.01518 (95% CI: [-0.02898, -0.00192]), while the "
+        "pitcher-clustered interval is [-0.03188, +0.0000136]. Because the pitcher-clustered interval crosses zero, "
+        "the statistical significance of the deficit depends on the resampling assumption. The positive upper bound "
+        "must not be rounded to zero.\n"
+        "4. **Proposed Precision vs. Pitch Count:** Proposed warning precision (33.3%) is numerically lower than "
+        "traditional pitch count precision (37.2%). The mechanical detector does not yield higher warning precision.\n"
+        "5. **Velocity Benchmark Evaluation:** Against the evaluated velocity-drop benchmark, the proposed system "
+        "detects more episodes but also generates more false warnings. In the expanded cohort, the velocity benchmark "
+        "produced only one test warning; approximately 38.9% of outing-bootstrap replicates have undefined velocity "
+        "precision due to a zero denominator (and 100% in sparse holdouts). This must not be described as unqualified "
+        "superiority, and any reported ratios conditional on finite replicates reflect severe sparsity.\n"
+        "6. **Velocity Scoring Availability:** The ~50% velocity scoring availability reflects pitch-level scoring "
+        "availability (restricted to fastball types FF/SI/FC), not an alert rate, and does not mean half the outings "
+        "lack velocity scores. Outing-level coverage is 100% across all qualified test outings.\n"
+        "7. **Cohort and Methodology Shifts:** Discrepancies between earlier exploratory findings and the frozen "
+        "evaluation cannot be attributed specifically to small-sample luck from this comparison alone. Both cohort "
+        "composition and evaluation methodology (operating threshold constraints and holdout definitions) changed.\n"
+        "8. **Delivery Deviations vs. Biological Fatigue:** Mechanical feature summaries describe kinematic delivery "
+        "deviations, but their actionable coaching value remains unvalidated. They do not establish why a collapse "
+        "occurred, cannot diagnose biological fatigue or tissue stress, and do not demonstrate causal mechanisms.\n"
+    )
+
     report = (
         "# Locked retrospective 2025 holdout report\n\n"
         f"- Actual data source: `{metrics.get('actual_data_source', 'unknown')}`\n"
@@ -84,6 +123,7 @@ def render_validation_report(output_dir: Path) -> Path:
         "- N/A means a missing denominator; an alert-group risk divided by zero comparison risk is infinite, while absent exposure groups are undefined.\n"
         "- Wider matching windows can mechanically increase recall and are not, alone, evidence of earlier prediction.\n"
         f"- Pitcher-clustered intervals use {metrics.get('test_pitchers_count', 'the test')} pitchers.\n\n"
+        + interpretation_section + "\n"
         "## Dataset accounting\n\n" + _markdown(accounting) +
         "\n\n## Pre-test cohort selection\n\n" + _markdown(
             cohort_selection[cohort_selection["selected"]].copy()

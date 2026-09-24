@@ -1,5 +1,6 @@
-# Generated evidence
+# Generated Evidence
 
-- `real_data/` contains validated MLB Statcast evidence under schema version 2, run `08a3a0b1ccde4ff4a59b9a36690cd1a3`. Its full-feature ablation matches the primary comparison; subset ablations are explicitly unavailable.
-- `simulation/` is reserved for explicitly synthetic benchmark runs.
-- Files directly under `outputs/` and the root `case_studies/` directory are legacy artifacts from the pre-freeze protocol. They are retained only for provenance and must not be cited as current results.
+- `real_data/`: **Canonical location** for all MLB Statcast evidence under the frozen primary 2023/2024/2025 protocol (including model comparison, bootstrap confidence intervals, lead-time sensitivity, threshold curves, feature ablations, and traceable case studies).
+- `legacy/`: Superseded historical artifacts from the pre-freeze exploratory protocol (retained purely for provenance; not to be cited as current results).
+- `cohort_expansion/`: Audit logs and selection pool for deterministic cohort expansion.
+- `simulation/`: Reserved for explicitly synthetic benchmark runs.

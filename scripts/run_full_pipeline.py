@@ -5,9 +5,9 @@ import json
 import hashlib
 import logging
 import os
-import uuid
-import subprocess
+import shutil
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +29,7 @@ from src.configuration import load_project_config
 from src.data_ingest.cohort import resolve_cohort
 from src.data_ingest.qualify_filter import QualifyFilter
 from src.data_ingest.statcast_loader import StatcastLoader
-from src.evaluation.ablation_runner import AblationRunner
+from src.evaluation.ablation_runner import AblationRunner, AblationConfig
 from src.evaluation.baseline_comparator import BaselineComparator
 from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
 from src.evaluation.lead_time import fixed_warning_horizon_analysis
@@ -44,7 +44,7 @@ from src.feature_engineering.mechanics_features import compute_kinematics_and_va
 from src.feature_engineering.rolling_stats import compute_rolling_features
 from src.label_builder.collapse_labels import CollapseLabelBuilder
 from src.reporting import render_validation_report
-from src.presentation import validate_operating_threshold_artifacts, validate_release_artifacts
+from src.presentation import validate_release_artifacts
 from src.storage.adapter import StorageManager
 from src.storage.integrity import (
     audit_persisted_warehouse,
@@ -63,18 +63,24 @@ MODEL_PREDICTIONS = {
     "velocity": "is_velocity_operating_alert",
     "pitch_count": "is_pitch_count_operating_alert",
 }
-MODEL_SCORE_COLUMNS = {
-    "proposed": "score_proposed_cusum", "contextual": "score_contextual",
-    "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
-}
+
+
+def _json_ready(value):
+    if isinstance(value, dict):
+        return {key: _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return None if not np.isfinite(value) else float(value)
+    return value
 
 
 def _resolve_algorithm_components(config: dict) -> dict:
-    """Construct the production components from typed, resolved configuration values."""
-    baseline = config["baseline"]
-    labels = config["labels"]
-    evaluation = config["evaluation"]
-    changepoint = config["changepoint"]
+    """Build production algorithms and labels from the resolved project config."""
+    baseline, labels = config["baseline"], config["labels"]
+    evaluation, changepoint = config["evaluation"], config["changepoint"]
     calibration_pitches = int(baseline["intra_game_calibration_pitches"])
     cusum = CUSUMDetector(
         slack_k=float(changepoint["cusum_slack_k"]),
@@ -108,23 +114,9 @@ def _resolve_algorithm_components(config: dict) -> dict:
     return {
         "msi_decay_alpha": float(config["anomaly"]["health_index_decay_alpha"]),
         "calibration_pitches": calibration_pitches,
-        "cusum": cusum,
-        "ewma": ewma,
-        "label_builder": label_builder,
-        "comparator": comparator,
+        "cusum": cusum, "ewma": ewma,
+        "label_builder": label_builder, "comparator": comparator,
     }
-
-
-def _json_ready(value):
-    if isinstance(value, dict):
-        return {key: _json_ready(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_ready(item) for item in value]
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating, float)):
-        return None if not np.isfinite(value) else float(value)
-    return value
 
 
 def _missing_data_summary(raw_df: pd.DataFrame) -> pd.DataFrame:
@@ -159,11 +151,9 @@ def _pitcher_model_evaluation(
         ] if not episodes_df.empty else pd.DataFrame()
         name = pitcher_df["pitcher_name"].dropna().iloc[0] if pitcher_df["pitcher_name"].notna().any() else str(pitcher)
         for model_key, prediction_col in MODEL_PREDICTIONS.items():
-            scores = pd.to_numeric(pitcher_df[MODEL_SCORE_COLUMNS[model_key]], errors="coerce")
             metrics, _, _ = evaluate_warning_predictions(
                 pitcher_df, pitcher_episodes, pitcher_df[prediction_col],
                 horizon_pitches=horizon_pitches, split="test",
-                availability=pd.Series(np.isfinite(scores), index=pitcher_df.index),
             )
             rows.append({
                 "pitcher": int(pitcher), "pitcher_name": name, "model_key": model_key,
@@ -195,36 +185,22 @@ def _write_protocol_manifest(
             "validation_episode_recall": metrics.get("episode_recall"),
             "validation_warning_precision": metrics.get("warning_precision"),
             "validation_false_warnings_per_outing": metrics.get("false_warnings_per_outing"),
-            "allowed_maximum_false_warnings_per_outing": resolved_runtime[
-                "threshold_selection"
-            ]["allowed_maximum_false_warnings_per_outing"],
+            "allowed_maximum_false_warnings_per_outing": resolved_runtime["threshold_selection"]["allowed_maximum_false_warnings_per_outing"],
         }
     resolved = {**resolved_runtime, "selected_models": selected_models}
-    # Run-specific source state and machine paths are recorded, but do not alter
-    # the scientific protocol identity for otherwise identical configurations.
-    canonical_fields = {key: value for key, value in resolved.items()
-                        if key not in {"source_control", "locations"}}
+    canonical_fields = {key: value for key, value in resolved.items() if key not in {"source_control", "locations"}}
     canonical = json.dumps(_json_ready(canonical_fields), sort_keys=True, separators=(",", ":"), allow_nan=False)
-    protocol_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
         "protocol_name": "2023_train_2024_validation_2025_test",
-        "protocol_sha256": protocol_hash,
+        "protocol_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "protocol_hash_fields": sorted(canonical_fields),
         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
         "actual_data_source": actual_source,
-        "baseline_update_policy": (
-            f"For every outing, use at most {resolved_runtime['baseline']['historical_window_starts']} "
-            "most recent qualified outings with dates "
-            "strictly before the scoring date; 2025 baselines may update only from completed prior outings."
-        ),
+        "baseline_update_policy": f"For every outing, use at most {resolved_runtime['baseline']['historical_window_starts']} most recent qualified outings with dates strictly before the scoring date; 2025 baselines may update only from completed prior outings.",
         "threshold_policy": "Select on 2024 only; keep fixed for every 2025 result and bootstrap replicate.",
-        "prior_2025_exposure_disclosure": (
-            "Exploratory 2025 metrics were generated in this workspace before this revised protocol. "
-            "The current result is therefore a locked retrospective holdout evaluation, not a pristine first look."
-            if actual_source == "mlb_statcast" else "Not applicable to simulation."
-        ),
+        "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look." if actual_source == "mlb_statcast" else "Not applicable to simulation.",
         "resolved_runtime": resolved,
     }
     with (output_dir / "protocol_manifest.json").open("w", encoding="utf-8") as handle:
@@ -232,40 +208,8 @@ def _write_protocol_manifest(
     return manifest
 
 
-def _git_state(base_path: Path) -> dict:
-    """Resolve source provenance without assuming Git is on PATH."""
-    candidates = ["git", r"C:\Users\cwu\AppData\Local\Programs\Git\cmd\git.exe"]
-    for executable in candidates:
-        try:
-            sha = subprocess.run(
-                [executable, "rev-parse", "HEAD"], cwd=base_path, check=True,
-                capture_output=True, text=True,
-            ).stdout.strip()
-            dirty = bool(subprocess.run(
-                [executable, "status", "--porcelain"], cwd=base_path, check=True,
-                capture_output=True, text=True,
-            ).stdout.strip())
-            patch = subprocess.run(
-                [executable, "diff", "--binary", "HEAD", "--", "src", "scripts", "config", "dashboard", "tests", "README.md"],
-                cwd=base_path, check=True, capture_output=True,
-            ).stdout
-            untracked = subprocess.run(
-                [executable, "ls-files", "--others", "--exclude-standard", "--", "src", "scripts", "config", "dashboard", "tests", "README.md"],
-                cwd=base_path, check=True, capture_output=True, text=True,
-            ).stdout.splitlines()
-            digest = hashlib.sha256(patch)
-            for relative in sorted(untracked):
-                digest.update(relative.encode("utf-8"))
-                digest.update((base_path / relative).read_bytes())
-            return {"commit_sha": sha, "worktree_dirty": dirty,
-                    "source_patch_sha256": digest.hexdigest()}
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            continue
-    return {"commit_sha": None, "worktree_dirty": None, "source_patch_sha256": None}
-
-
 def _promote_staged_outputs(stage_dir: Path, published_dir: Path, run_id: str) -> None:
-    """Validate then replace a completed directory, restoring it on rename failure."""
+    """Validate the completed release, then atomically promote it with rollback."""
     validate_release_artifacts(stage_dir)
     backup_dir = published_dir.with_name(f".{published_dir.name}.{run_id}.previous")
     if published_dir.exists():
@@ -278,6 +222,15 @@ def _promote_staged_outputs(stage_dir: Path, published_dir: Path, run_id: str) -
         raise
     if backup_dir.exists():
         logger.info("Previous published output retained at %s", backup_dir)
+
+
+def _git_state(base_path: Path) -> dict:
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=base_path, check=True, capture_output=True, text=True).stdout.strip()
+        dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=base_path, check=True, capture_output=True, text=True).stdout.strip())
+        return {"commit_sha": sha, "worktree_dirty": dirty}
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return {"commit_sha": None, "worktree_dirty": None}
 
 
 def _plot_threshold_curves(curves: pd.DataFrame, output_path: Path) -> None:
@@ -313,19 +266,10 @@ def _plot_threshold_curves(curves: pd.DataFrame, output_path: Path) -> None:
     plt.close(fig)
 
 
-def _build_case_studies(
-    df, episodes, output_dir, matching_horizon_pitches,
-    msi_decay_alpha, calibration_pitches, collapse_xwoba_threshold,
-):
-    visualizer = CaseStudyVisualizer(
-        output_dir=str(output_dir), msi_decay_alpha=msi_decay_alpha,
-        calibration_pitches=calibration_pitches,
-        collapse_xwoba_threshold=collapse_xwoba_threshold,
-    )
+def _build_case_studies(df, episodes, output_dir):
+    visualizer = CaseStudyVisualizer(output_dir=str(output_dir))
     metrics, warnings, matches = evaluate_warning_predictions(
-        df, episodes, df["is_proposed_operating_alert"],
-        horizon_pitches=matching_horizon_pitches, split="test",
-        availability=pd.Series(np.isfinite(pd.to_numeric(df["score_proposed_cusum"], errors="coerce")), index=df.index),
+        df, episodes, df["is_proposed_operating_alert"], horizon_pitches=15, split="test"
     )
     test_df = df[df["dataset_split"].eq("test")]
     episode_keys = set()
@@ -384,12 +328,12 @@ def _build_case_studies(
         elif not outing_warnings.empty:
             pitch = int(outing_warnings["warning_pitch"].min())
             evidence["warning_pitch"] = pitch
-            note = f"Warning at pitch {pitch}; no episode onset matched within {matching_horizon_pitches} pitches."
+            note = f"Warning at pitch {pitch}; no episode onset matched within 15 pitches."
         elif (game_pk, pitcher) in episode_keys:
             eps = episodes[(episodes["game_pk"] == game_pk) & (episodes["pitcher"] == pitcher)].sort_values("onset_pitch")
             onset = int(eps["onset_pitch"].iloc[0])
             evidence["episode_onset_pitch"] = onset
-            note = f"Episode onset at pitch {onset}; no warning matched in the preceding {matching_horizon_pitches} pitches."
+            note = f"Episode onset at pitch {onset}; no warning matched in the preceding 15 pitches."
         else:
             note = "No warning and no evaluable collapse episode in this outing."
         title, filename = definitions[category]
@@ -416,7 +360,7 @@ def run_pipeline(
     published_dir = base_path / "outputs" / ("real_data" if use_real_data else "simulation")
     run_id = uuid.uuid4().hex
     output_dir = base_path / "outputs" / ".staging" / run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=False)
     sm = StorageManager(base_dir=str(base_path))
     loader = StatcastLoader(cache_dir=str(base_path / "data" / "raw"))
     requested_mode = "mlb_statcast" if use_real_data else "simulation_benchmark"
@@ -449,14 +393,7 @@ def run_pipeline(
     raw_df = prepare_raw_pitch_data(
         raw_df, actual_source, start_dt, end_dt, required_years=required_years
     )
-    evaluation_config = config["evaluation"]
-    label_config = config["labels"]
-    raw_df = assign_temporal_split(
-        raw_df,
-        train_end=evaluation_config["train_end"],
-        validation_end=evaluation_config["validation_end"],
-        test_start=evaluation_config["test_start"],
-    )
+    raw_df = assign_temporal_split(raw_df)
     for audit_frame in (cohort_selection_audit, ingestion_segment_audit):
         audit_frame["actual_data_source"] = actual_source
 
@@ -467,7 +404,6 @@ def run_pipeline(
         cohort_eligibility_end=qualify_config["cohort_eligibility_end"],
         max_missing_mechanics_pct=float(qualify_config["max_missing_mechanics_pct"]),
         top_n_pitch_types=int(qualify_config["top_n_pitch_types"]),
-        horizon_pas=int(label_config["prediction_horizon_pas"]),
     )
     qualified_df, dim_pitchers, dim_games = qualifier.filter_qualified_games(raw_df)
     if qualified_df.empty:
@@ -504,14 +440,10 @@ def run_pipeline(
         ))
     scored_df = pd.concat(scored, ignore_index=True)
     scored_df["health_index"] = compute_mechanics_stability_index(
-        scored_df["mahalanobis_calibrated"].to_numpy(),
-        decay_alpha=components["msi_decay_alpha"],
+        scored_df["mahalanobis_calibrated"].to_numpy()
     )
 
-    calibration_pitches = components["calibration_pitches"]
-    cusum = components["cusum"]
-    ewma = components["ewma"]
-    detected = []
+    cusum, ewma, detected = components["cusum"], components["ewma"], []
     for _, outing in scored_df.groupby(["pitcher", "game_pk"], sort=False):
         with_cusum, _ = cusum.detect_game_alerts(outing)
         with_ewma, _ = ewma.detect_game_alerts(with_cusum)
@@ -528,103 +460,18 @@ def run_pipeline(
     labeled_df = pd.concat(labeled, ignore_index=True)
     episodes_df = pd.concat(episode_frames, ignore_index=True) if episode_frames else pd.DataFrame()
 
-    matching_horizon = int(evaluation_config["warning_matching_horizon_pitches"])
+    evaluation_config = config["evaluation"]
     comparator = components["comparator"]
     manifest_holder = {}
-
-    selected_count = (
-        int(cohort_selection_audit["selected"].sum())
-        if not cohort_selection_audit.empty else int(dim_pitchers["pitcher"].nunique())
-    )
+    selected_count = int(cohort_selection_audit["selected"].sum()) if not cohort_selection_audit.empty else int(dim_pitchers["pitcher"].nunique())
     cohort_seed = config["ingestion"].get("cohort_selection", {}).get("seed")
     resolved_runtime = {
         "source_control": _git_state(base_path),
-        "cohort": {
-            "identifier": (
-                f"pretest_{selected_count}_seed_{cohort_seed}"
-                if cohort_seed is not None else f"{actual_source}_{selected_count}"
-            ),
-            "selected_size": selected_count,
-            "qualified_size": int(dim_pitchers["pitcher"].nunique()),
-            "selection_seed": cohort_seed,
-            "selection_seasons": config["ingestion"].get("cohort_selection", {}).get("seasons"),
-        },
-        "random_seeds": {
-            "cohort_selection": cohort_seed,
-            "contextual_logistic_regression": 42,
-            "bootstrap": int(evaluation_config["bootstrap_seed"]),
-        },
-        "temporal_protocol": {
-            "training_end": evaluation_config["train_end"],
-            "validation_end": evaluation_config["validation_end"],
-            "test_start": evaluation_config["test_start"],
-            "test_end": end_dt,
-            "training_season": 2023,
-            "validation_season": 2024,
-            "test_season": 2025,
-        },
-        "qualification": {
-            "minimum_pitches_per_outing": int(qualify_config["min_pitches_per_game"]),
-            "minimum_pretest_starts": int(qualify_config["min_starts_for_cohort"]),
-            "cohort_eligibility_end": qualify_config["cohort_eligibility_end"],
-            "maximum_missing_mechanics_fraction": float(qualify_config["max_missing_mechanics_pct"]),
-            "top_pitch_types": int(qualify_config["top_n_pitch_types"]),
-        },
-        "baseline": {
-            "historical_window_starts": int(baseline_config["historical_window_starts"]),
-            "minimum_prior_starts": int(baseline_config["min_prior_starts"]),
-            "minimum_pitch_type_observations": int(baseline_config["min_pitches_for_baseline"]),
-            "calibration_pitches": calibration_pitches,
-            "shrinkage_lambda": float(baseline_config["shrinkage_lambda"]),
-        },
-        "anomaly_scoring": {
-            "method": config["anomaly"]["method"],
-            "ridge_regularization": float(config["anomaly"]["ridge_regularization"]),
-            "msi_decay_alpha": float(config["anomaly"]["health_index_decay_alpha"]),
-        },
-        "detectors": {
-            "cusum": {
-                "slack_k": cusum.slack_k,
-                "internal_alert_h": cusum.threshold_h,
-                "reference_mean": cusum.reference_mean,
-                "reference_std": cusum.reference_std,
-            },
-            "ewma": {
-                "lambda": ewma.ewma_lambda,
-                "control_limit_sigma": ewma.l_sigma,
-                "reference_mean": ewma.reference_mean,
-                "reference_std": ewma.reference_std,
-            },
-        },
-        "horizons": {
-            "label_pitches": label_builder.horizon_pitches,
-            "label_plate_appearances": label_builder.horizon_pas,
-            "warning_matching_pitches": matching_horizon,
-            "sensitivity_matching_pitches": list(map(int, evaluation_config["sensitivity_horizons"])),
-        },
-        "labels": {
-            "window_pa_size": label_builder.window_pa_size,
-            "blended_xwoba_threshold": label_builder.blended_xwoba_threshold,
-            "min_barrels_in_window": label_builder.min_barrels_in_window,
-            "min_bb_hbp_in_window": label_builder.min_bb_hbp_in_window,
-        },
-        "bootstrap": {
-            "samples": int(evaluation_config["bootstrap_samples"]),
-            "seed": int(evaluation_config["bootstrap_seed"]),
-            "primary_resampling_unit": "outing",
-            "sensitivity_resampling_unit": "pitcher",
-        },
-        "threshold_selection": {
-            "season": 2024,
-            "allowed_maximum_false_warnings_per_outing": float(
-                evaluation_config["false_warnings_per_outing"]
-            ),
-        },
-        "locations": {
-            "raw_cache": str((base_path / "data" / "raw").resolve()),
-            "warehouse": str((base_path / "data" / "baseball_warehouse.duckdb").resolve()),
-            "output_directory": str(output_dir.resolve()),
-        },
+        "cohort": {"identifier": f"pretest_{selected_count}_seed_{cohort_seed}" if cohort_seed is not None else f"{actual_source}_{selected_count}", "selected_size": selected_count, "qualified_size": int(dim_pitchers["pitcher"].nunique()), "selection_seed": cohort_seed},
+        "baseline": {"historical_window_starts": int(baseline_config["historical_window_starts"]), "calibration_pitches": int(baseline_config["intra_game_calibration_pitches"]), "shrinkage_lambda": float(baseline_config["shrinkage_lambda"])},
+        "detectors": {"cusum": {"slack_k": cusum.slack_k, "internal_alert_h": cusum.threshold_h, "reference_mean": cusum.reference_mean, "reference_std": cusum.reference_std}, "ewma": {"lambda": ewma.ewma_lambda, "control_limit_sigma": ewma.l_sigma}},
+        "threshold_selection": {"allowed_maximum_false_warnings_per_outing": float(evaluation_config["false_warnings_per_outing"])},
+        "locations": {"output_directory": str(output_dir.resolve())},
     }
 
     def freeze_primary_protocol(thresholds):
@@ -642,18 +489,13 @@ def run_pipeline(
 
     # Preserve the earlier late-2024 analysis as a separately labeled historical
     # experiment. It is never mixed into the primary 2025 comparison.
-    historical_config = config["historical_experiment"]
-    historical_labeled = assign_historical_temporal_split(labeled_df, **historical_config)
+    historical_labeled = assign_historical_temporal_split(labeled_df)
     historical_episodes = (
-        assign_historical_temporal_split(episodes_df, **historical_config)
-        if not episodes_df.empty else episodes_df
+        assign_historical_temporal_split(episodes_df) if not episodes_df.empty else episodes_df
     )
     historical_comparator = BaselineComparator(
-        velocity_drop_mph=float(evaluation_config["naive_velocity_drop_mph"]),
-        pitch_count_thresh=int(evaluation_config["naive_pitch_count_threshold"]),
-        horizon_pitches=matching_horizon,
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
         false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
-        calibration_pitches=calibration_pitches,
     )
     historical_comparison, _, _ = historical_comparator.compare_systems(
         historical_labeled, historical_episodes, return_details=True
@@ -664,15 +506,15 @@ def run_pipeline(
     protocol_manifest = manifest_holder["manifest"]
     metrics_summary = dict(model_metrics["proposed"])
     test_pitchers_count = int(
-        evaluated_df.loc[evaluated_df["dataset_split"].eq("test"), "pitcher"].nunique()
+        evaluated_df.loc[eligible_pitch_mask(evaluated_df, "test"), "pitcher"].nunique()
     )
     metrics_summary.update({
         "requested_data_mode": requested_mode,
         "actual_data_source": actual_source,
         "split_definition": {
-            "train": f"through {evaluation_config['train_end']}",
-            "validation": f"after {evaluation_config['train_end']} through {evaluation_config['validation_end']}",
-            "test": f"from {evaluation_config['test_start']} through {end_dt}",
+            "train": "through 2023-12-31",
+            "validation": "2024-01-01 through 2024-12-31",
+            "test": "2025-01-01 through 2025-09-30",
         },
         "data_coverage": {
             "requested_start": start_dt,
@@ -682,7 +524,7 @@ def run_pipeline(
             "seasons_present": required_years,
         },
         "false_alarm_allowance": (
-            f"{float(evaluation_config['false_warnings_per_outing'])} distinct false warnings per validation outing; chosen as an operational "
+            "0.5 distinct false warnings per validation outing; chosen as an operational "
             "ceiling of approximately one unmatched warning every two starts."
         ),
         "minimum_pitches_per_outing": int(qualify_config["min_pitches_per_game"]),
@@ -696,14 +538,10 @@ def run_pipeline(
         "qualified_outings": int(len(dim_games)),
         "qualified_pitches": int(len(qualified_df)),
         "protocol_sha256": protocol_manifest["protocol_sha256"],
-        "run_id": run_id,
         "prior_2025_exposure_disclosure": protocol_manifest["prior_2025_exposure_disclosure"],
     })
 
-    alerts_df = warning_events(
-        evaluated_df, evaluated_df["is_proposed_operating_alert"],
-        availability=pd.Series(np.isfinite(pd.to_numeric(evaluated_df["score_proposed_cusum"], errors="coerce")), index=evaluated_df.index),
-    )
+    alerts_df = warning_events(evaluated_df, evaluated_df["is_proposed_operating_alert"])
     if not alerts_df.empty:
         alerts_df = alerts_df.rename(columns={"warning_pitch": "alert_pitch_number"})
         alerts_df["detector_type"] = "CUSUM_VALIDATION_SELECTED"
@@ -715,25 +553,17 @@ def run_pipeline(
 
     bootstrap_outing = paired_bootstrap_confidence_intervals(
         evaluated_df, episodes_df, MODEL_PREDICTIONS,
-        horizon_pitches=matching_horizon,
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
         n_bootstrap=int(evaluation_config["bootstrap_samples"]),
         seed=int(evaluation_config["bootstrap_seed"]),
         cluster_by_pitcher=False,
-        model_availability={
-            "proposed": "score_proposed_cusum", "contextual": "score_contextual",
-            "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
-        },
     )
     bootstrap_pitcher = paired_bootstrap_confidence_intervals(
         evaluated_df, episodes_df, MODEL_PREDICTIONS,
-        horizon_pitches=matching_horizon,
+        horizon_pitches=int(evaluation_config["prediction_horizon_pitches"]),
         n_bootstrap=int(evaluation_config["bootstrap_samples"]),
         seed=int(evaluation_config["bootstrap_seed"]),
         cluster_by_pitcher=True,
-        model_availability={
-            "proposed": "score_proposed_cusum", "contextual": "score_contextual",
-            "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
-        },
     )
     bootstrap_results = pd.concat([bootstrap_outing, bootstrap_pitcher], ignore_index=True)
     bootstrap_results["actual_data_source"] = actual_source
@@ -741,27 +571,32 @@ def run_pipeline(
     lead_time_sensitivity, matched_records, lead_time_distribution = fixed_warning_horizon_analysis(
         evaluated_df, episodes_df, MODEL_PREDICTIONS,
         horizons=evaluation_config["sensitivity_horizons"], split="test",
-        model_availability={
-            "proposed": "score_proposed_cusum", "contextual": "score_contextual",
-            "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
-        },
     )
     for result in (matched_records, lead_time_distribution):
         if not result.empty and "actual_data_source" not in result:
             result["actual_data_source"] = actual_source
 
+    changepoint_config = config["changepoint"]
+    ablation_config = AblationConfig(
+        cusum_slack_k=float(cusum.slack_k),
+        cusum_threshold_h=float(cusum.threshold_h),
+        cusum_reference_mean=float(cusum.reference_mean),
+        cusum_reference_std=float(cusum.reference_std),
+        calibration_pitches=int(components["calibration_pitches"]),
+        horizon_pitches=int(evaluation_config["warning_matching_horizon_pitches"]),
+        false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
+        ridge_regularization=float(config["anomaly"]["ridge_regularization"]),
+    )
     ablation_runner = AblationRunner(
         evaluated_df, episodes_df,
-        false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
-        horizon_pitches=matching_horizon,
+        config=ablation_config,
+        baseline_store=baseline_store,
     )
-    ablations = ablation_runner.run_feature_ablations(
-        comparator.frozen_thresholds["proposed"], model_metrics["proposed"],
-        protocol_manifest["protocol_sha256"],
-        comparator.warning_records.loc[comparator.warning_records["model_key"].eq("proposed")]
-        if not comparator.warning_records.empty else pd.DataFrame(columns=["game_pk", "pitcher", "warning_pitch"]),
-    )
-    sensitivity = ablation_runner.run_sensitivity_analysis()
+    ablations, ablation_manifest = ablation_runner.run_feature_ablations()
+    ablation_manifest.parent_protocol_hash = protocol_manifest.get("protocol_sha256")
+    sensitivity = AblationRunner(
+        evaluated_df, episodes_df, config=ablation_config, baseline_store=baseline_store,
+    ).run_sensitivity_analysis()
     for result in (ablations, sensitivity):
         result["Actual Data Source"] = actual_source
 
@@ -779,27 +614,8 @@ def run_pipeline(
     )
     pitcher_model_evaluation = _pitcher_model_evaluation(
         evaluated_df, episodes_df, actual_source,
-        matching_horizon,
+        int(evaluation_config["prediction_horizon_pitches"]),
     )
-
-    coverage_rows = []
-    for model_key, model_metrics_row in model_metrics.items():
-        coverage_rows.append({
-            "model_key": model_key,
-            "total_qualified_test_outings": model_metrics_row["total_qualified_outings"],
-            "outings_with_available_score": model_metrics_row["outings_with_available_score"],
-            "outings_without_available_score": model_metrics_row["outings_without_available_score"],
-            "evaluation_opportunity_pitches": model_metrics_row["evaluation_opportunity_pitches"],
-            "score_available_evaluation_pitches": model_metrics_row["score_available_evaluation_pitches"],
-            "pitch_level_scoring_coverage": model_metrics_row["pitch_level_scoring_coverage"],
-            "outing_level_scoring_coverage": model_metrics_row["outing_level_scoring_coverage"],
-            "evaluated_episodes": model_metrics_row["evaluated_episodes_count"],
-            "episode_recall_denominator": model_metrics_row["headline_denominators"]["episode_recall"],
-            "warning_precision_denominator": model_metrics_row["headline_denominators"]["warning_precision"],
-            "false_warnings_per_outing_denominator": model_metrics_row["headline_denominators"]["false_warnings_per_outing"],
-            "actual_data_source": actual_source,
-        })
-    evaluation_coverage = pd.DataFrame(coverage_rows)
 
     frames = {
         "raw_statcast_pitches": raw_df,
@@ -825,11 +641,7 @@ def run_pipeline(
         "audit_cohort_selection": cohort_selection_audit,
         "audit_ingestion_segments": ingestion_segment_audit,
         "mart_pitcher_model_evaluation": pitcher_model_evaluation,
-        "mart_evaluation_coverage": evaluation_coverage,
     }
-    for frame in frames.values():
-        if "actual_data_source" not in frame and "Actual Data Source" not in frame:
-            frame["actual_data_source"] = actual_source
     integrity_report = audit_pipeline_frames(frames, actual_source, required_years)
     frames["warehouse_integrity_report"] = integrity_report
     layer_by_table = {
@@ -856,9 +668,16 @@ def run_pipeline(
         "audit_cohort_selection": "gold",
         "audit_ingestion_segments": "gold",
         "mart_pitcher_model_evaluation": "gold",
-        "mart_evaluation_coverage": "gold",
         "warehouse_integrity_report": "gold",
     }
+    sm.save_tables_atomically([
+        (frame, name, layer_by_table[name]) for name, frame in frames.items()
+    ])
+    integrity_report = audit_persisted_warehouse(sm, actual_source, required_years)
+    sm.save_tables_atomically([
+        (integrity_report, "warehouse_integrity_report", "gold")
+    ])
+
     output_frames = {
         "model_comparison.csv": comparison_df,
         "historical_2024_model_comparison.csv": historical_comparison,
@@ -877,35 +696,18 @@ def run_pipeline(
         "cohort_selection.csv": cohort_selection_audit,
         "ingestion_segments.csv": ingestion_segment_audit,
         "pitcher_model_evaluation.csv": pitcher_model_evaluation,
-        "evaluation_coverage.csv": evaluation_coverage,
     }
     for filename, frame in output_frames.items():
-        frame["run_id"] = run_id
-        frame["protocol_sha256"] = protocol_manifest["protocol_sha256"]
         frame.to_csv(output_dir / filename, index=False)
-    case_index = _build_case_studies(
-        evaluated_df, episodes_df, output_dir / "case_studies", matching_horizon,
-        components["msi_decay_alpha"], calibration_pitches,
-        float(label_config["blended_xwoba_threshold"]),
-    )
-    case_index["run_id"] = run_id
-    case_index["protocol_sha256"] = protocol_manifest["protocol_sha256"]
-    case_index.to_csv(output_dir / "case_studies" / "case_study_index.csv", index=False)
+    case_index = _build_case_studies(evaluated_df, episodes_df, output_dir / "case_studies")
 
     with (output_dir / "metrics_summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(_json_ready(metrics_summary), handle, indent=2, allow_nan=False)
-    validate_operating_threshold_artifacts(protocol_manifest, comparison_df)
+        json.dump(_json_ready(metrics_summary), handle, indent=2)
+    with (output_dir / "ablation_manifest.json").open("w", encoding="utf-8") as handle:
+        json.dump(_json_ready(ablation_manifest.to_dict()), handle, indent=2)
     render_validation_report(output_dir)
-    validate_release_artifacts(output_dir)
-    sm.save_tables_atomically([
-        (frame, name, layer_by_table[name]) for name, frame in frames.items()
-    ])
-    persisted_integrity = audit_persisted_warehouse(sm, actual_source, required_years)
-    sm.save_tables_atomically([
-        (persisted_integrity, "warehouse_integrity_report", "gold")
-    ])
     _promote_staged_outputs(output_dir, published_dir, run_id)
-    sm.close()
+    output_dir = published_dir
     logger.info("Pipeline complete. Requested=%s actual=%s", requested_mode, actual_source)
     return metrics_summary, comparison_df, ablations
 
