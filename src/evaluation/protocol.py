@@ -12,20 +12,12 @@ VALIDATION_END = pd.Timestamp("2024-12-31")
 TEST_START = pd.Timestamp("2025-01-01")
 
 
-def assign_temporal_split(
-    df: pd.DataFrame,
-    train_end: Any = TRAIN_END,
-    validation_end: Any = VALIDATION_END,
-    test_start: Any = TEST_START,
-) -> pd.DataFrame:
+def assign_temporal_split(df: pd.DataFrame) -> pd.DataFrame:
     """Assign the frozen primary protocol: 2023 train, 2024 validation, 2025 test."""
     result = df.copy()
     dates = pd.to_datetime(result["game_date"], errors="coerce")
-    train_end = pd.Timestamp(train_end)
-    validation_end = pd.Timestamp(validation_end)
-    test_start = pd.Timestamp(test_start)
     result["dataset_split"] = np.select(
-        [dates <= train_end, (dates > train_end) & (dates <= validation_end), dates >= test_start],
+        [dates <= TRAIN_END, (dates > TRAIN_END) & (dates <= VALIDATION_END), dates >= TEST_START],
         ["train", "validation", "test"],
         default="unassigned",
     )
@@ -33,25 +25,15 @@ def assign_temporal_split(
     return result
 
 
-def assign_historical_temporal_split(
-    df: pd.DataFrame,
-    train_end: Any = TRAIN_END,
-    validation_end: Any = "2024-06-30",
-    test_start: Any = "2024-07-01",
-    test_end: Any = "2024-12-31",
-) -> pd.DataFrame:
+def assign_historical_temporal_split(df: pd.DataFrame) -> pd.DataFrame:
     """Preserve the earlier 2023 / early-2024 / late-2024 historical experiment."""
     result = df.copy()
     dates = pd.to_datetime(result["game_date"], errors="coerce")
-    train_end = pd.Timestamp(train_end)
-    validation_end = pd.Timestamp(validation_end)
-    test_start = pd.Timestamp(test_start)
-    test_end = pd.Timestamp(test_end)
     result["dataset_split"] = np.select(
         [
-            dates <= train_end,
-            (dates > train_end) & (dates <= validation_end),
-            (dates >= test_start) & (dates <= test_end),
+            dates <= TRAIN_END,
+            (dates > TRAIN_END) & (dates <= pd.Timestamp("2024-06-30")),
+            (dates >= pd.Timestamp("2024-07-01")) & (dates <= pd.Timestamp("2024-12-31")),
         ],
         ["train", "validation", "test"],
         default="unassigned",
@@ -60,42 +42,22 @@ def assign_historical_temporal_split(
     return result
 
 
-def evaluation_opportunity_mask(df: pd.DataFrame, split: Optional[str] = None) -> pd.Series:
-    """Pitches where an operational warning could be evaluated, before score availability."""
+def eligible_pitch_mask(df: pd.DataFrame, split: Optional[str] = None) -> pd.Series:
+    """Return the single scoring/evaluation/display eligibility policy."""
     mask = pd.Series(True, index=df.index, dtype=bool)
+    if "pitch_number_in_outing" in df:
+        mask &= df["pitch_number_in_outing"] > 20
     if "is_calibration_phase" in df:
         mask &= ~df["is_calibration_phase"].fillna(True).astype(bool)
+    if "score_available" in df:
+        mask &= df["score_available"].fillna(False).astype(bool)
+    elif "mahalanobis_calibrated" in df:
+        mask &= df["mahalanobis_calibrated"].notna()
     if "is_censored_followup" in df:
         mask &= ~df["is_censored_followup"].fillna(True).astype(bool)
     if split is not None and "dataset_split" in df:
         mask &= df["dataset_split"].eq(split)
     return mask
-
-
-def eligible_pitch_mask(
-    df: pd.DataFrame,
-    split: Optional[str] = None,
-    availability: Optional[pd.Series] = None,
-) -> pd.Series:
-    """Return warning opportunities with a usable score under one shared policy."""
-    mask = evaluation_opportunity_mask(df, split)
-    if availability is not None:
-        mask &= availability.reindex(df.index).fillna(False).astype(bool)
-    elif "score_available" in df:
-        mask &= df["score_available"].fillna(False).astype(bool)
-    elif "mahalanobis_calibrated" in df:
-        mask &= df["mahalanobis_calibrated"].notna()
-    return mask
-
-
-def build_evaluation_universe(df: pd.DataFrame, split: Optional[str] = None) -> pd.DataFrame:
-    """Return the authoritative qualified-outing population for an evaluation split."""
-    work = df
-    if split is not None and "dataset_split" in work:
-        work = work[work["dataset_split"].eq(split)]
-    columns = ["game_pk", "pitcher"]
-    optional = [column for column in ("game_date", "dataset_split") if column in work]
-    return work[columns + optional].drop_duplicates(columns).reset_index(drop=True)
 
 
 def episodes_for_split(episodes_df: Optional[pd.DataFrame], split: Optional[str]) -> pd.DataFrame:
@@ -107,12 +69,7 @@ def episodes_for_split(episodes_df: Optional[pd.DataFrame], split: Optional[str]
     return result
 
 
-def warning_events(
-    df: pd.DataFrame,
-    predictions: pd.Series,
-    availability: Optional[pd.Series] = None,
-    split: Optional[str] = None,
-) -> pd.DataFrame:
+def warning_events(df: pd.DataFrame, predictions: pd.Series) -> pd.DataFrame:
     """Collapse consecutive flagged pitches into distinct warning events."""
     columns = [
         "game_pk", "pitcher", "warning_pitch", "warning_pa", "game_date",
@@ -125,19 +82,21 @@ def warning_events(
     # Keep the exact index-aligned semantics while avoiding a Python loop over
     # every outing and warning.
     work = df.copy()
-    available = eligible_pitch_mask(work, split=split, availability=availability)
-    work["_prediction"] = (
-        predictions.reindex(df.index).fillna(False).astype(bool) & available
-    ).to_numpy()
+    work["_prediction"] = predictions.reindex(df.index).fillna(False).astype(bool).to_numpy()
     work = work.sort_values(
         ["game_pk", "pitcher", "pitch_number_in_outing"], kind="stable"
     )
-    groups = work.groupby(["game_pk", "pitcher"], sort=False)
-    previous = groups["_prediction"].shift(fill_value=False)
-    pitch_number = pd.to_numeric(work["pitch_number_in_outing"], errors="coerce")
-    previous_pitch = groups["pitch_number_in_outing"].shift()
-    consecutive_pitch = pitch_number.eq(pd.to_numeric(previous_pitch, errors="coerce") + 1)
-    starts = work["_prediction"] & (~previous | ~consecutive_pitch)
+    prev_prediction = work.groupby(["game_pk", "pitcher"], sort=False)["_prediction"].shift(
+        fill_value=False
+    )
+    if "pitch_number_in_outing" in work.columns:
+        prev_pitch = work.groupby(["game_pk", "pitcher"], sort=False)["pitch_number_in_outing"].shift()
+        curr_pitch = pd.to_numeric(work["pitch_number_in_outing"], errors="coerce")
+        is_contiguous = (curr_pitch - prev_pitch) == 1
+        previous = prev_prediction & is_contiguous
+    else:
+        previous = prev_prediction
+    starts = work["_prediction"] & ~previous
     warnings = work.loc[starts].copy()
     if warnings.empty:
         return pd.DataFrame(columns=columns)
@@ -166,27 +125,29 @@ def evaluate_warning_predictions(
     predictions: pd.Series,
     horizon_pitches: int = 15,
     split: Optional[str] = None,
-    availability: Optional[pd.Series] = None,
 ) -> Tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]:
-    """Evaluate on all qualified outings; unavailable scores cannot generate warnings."""
-    split_mask = pd.Series(True, index=df.index)
-    if split is not None and "dataset_split" in df:
-        split_mask &= df["dataset_split"].eq(split)
-    split_df = df.loc[split_mask].copy()
-    universe = build_evaluation_universe(df, split)
-    opportunity_mask = evaluation_opportunity_mask(df, split)
-    available_mask = eligible_pitch_mask(df, split, availability=availability)
-    eval_df = df.loc[available_mask].copy()
-    warnings = warning_events(
-        split_df,
-        predictions.reindex(split_df.index),
-        availability=availability.reindex(split_df.index) if availability is not None else None,
-    )
+    """Evaluate warnings and episodes with one-to-one, timely event matching."""
+    eval_df = df.loc[eligible_pitch_mask(df, split)].copy()
+    eval_pred = predictions.reindex(eval_df.index).fillna(False).astype(bool)
+    warnings = warning_events(eval_df, eval_pred)
     episodes = episodes_for_split(episodes_df, split)
+
     if not episodes.empty:
-        episodes = episodes.merge(
-            universe[["game_pk", "pitcher"]], on=["game_pk", "pitcher"], how="inner"
-        )
+        valid_outings = eval_df[["game_pk", "pitcher"]].drop_duplicates()
+        episodes = episodes.merge(valid_outings, on=["game_pk", "pitcher"], how="inner")
+        # Do not count an episode when its entire warning window occurred during
+        # calibration or otherwise had no available, uncensored score.
+        pitch_numbers_by_outing = {
+            key: group["pitch_number_in_outing"].to_numpy()
+            for key, group in eval_df.groupby(["game_pk", "pitcher"], sort=False)
+        }
+        evaluable_episode_indices = []
+        for episode_idx, episode in episodes.iterrows():
+            pitches = pitch_numbers_by_outing.get((episode["game_pk"], episode["pitcher"]), np.array([]))
+            if np.any((pitches < episode["onset_pitch"]) &
+                      (pitches >= episode["onset_pitch"] - horizon_pitches)):
+                evaluable_episode_indices.append(episode_idx)
+        episodes = episodes.loc[evaluable_episode_indices]
 
     matches = []
     matched_episode_keys = set()
@@ -229,7 +190,7 @@ def evaluate_warning_predictions(
         warnings = warnings.copy()
         warnings["is_matched_warning"] = warnings.index.isin(matched_warning_indices)
 
-    outing_keys = universe[["game_pk", "pitcher"]]
+    outing_keys = eval_df[["game_pk", "pitcher"]].drop_duplicates()
     total_outings = len(outing_keys)
     episode_outing_keys = set()
     if not episodes.empty:
@@ -247,25 +208,10 @@ def evaluate_warning_predictions(
     leads = match_df.get("lead_time_pitches", pd.Series(dtype=float))
     lead_pas = match_df.get("lead_time_pas", pd.Series(dtype=float))
 
-    available_outings = eval_df[["game_pk", "pitcher"]].drop_duplicates()
-    opportunity_count = int(opportunity_mask.sum())
-    available_count = int(available_mask.sum())
     metrics = {
         "evaluated_outings_count": int(total_outings),
-        "evaluated_pitches_count": available_count,
-        "total_qualified_outings": int(total_outings),
-        "outings_with_available_score": int(len(available_outings)),
-        "outings_without_available_score": int(total_outings - len(available_outings)),
-        "evaluation_opportunity_pitches": opportunity_count,
-        "score_available_evaluation_pitches": available_count,
-        "pitch_level_scoring_coverage": (
-            float(available_count / opportunity_count) if opportunity_count else 0.0
-        ),
-        "outing_level_scoring_coverage": (
-            float(len(available_outings) / total_outings) if total_outings else 0.0
-        ),
+        "evaluated_pitches_count": int(len(eval_df)),
         "total_collapse_episodes": int(total_episodes),
-        "evaluated_episodes_count": int(total_episodes),
         "collapse_episodes_detected": int(len(matched_episode_keys)),
         "episode_recall": float(len(matched_episode_keys) / total_episodes) if total_episodes else 0.0,
         "warning_precision": float(matched_warnings / total_warnings) if total_warnings else 0.0,
@@ -279,12 +225,6 @@ def evaluate_warning_predictions(
         "lead_time_median_pitches": float(leads.median()) if len(leads) else np.nan,
         "lead_time_mean_pas": float(lead_pas.mean()) if len(lead_pas) else np.nan,
         "lead_time_median_pas": float(lead_pas.median()) if len(lead_pas) else np.nan,
-        "headline_denominators": {
-            "episode_recall": int(total_episodes),
-            "warning_precision": int(total_warnings),
-            "false_warnings_per_outing": int(total_outings),
-            "clean_outing_false_alarm_rate": int(len(clean_outing_keys)),
-        },
     }
     return metrics, warnings, match_df
 
@@ -298,8 +238,7 @@ def select_operating_threshold(
     split: str = "validation",
 ) -> Tuple[float, Dict[str, Any]]:
     """Select the best recall threshold under a shared false-warning allowance."""
-    score_available = df[score_col].replace([np.inf, -np.inf], np.nan).notna()
-    eligible = df.loc[eligible_pitch_mask(df, split, availability=score_available)]
+    eligible = df.loc[eligible_pitch_mask(df, split)]
     finite = eligible[score_col].replace([np.inf, -np.inf], np.nan).dropna()
     if finite.empty:
         return np.inf, {}
@@ -312,8 +251,7 @@ def select_operating_threshold(
     for threshold in candidates:
         predictions = df[score_col].ge(threshold) & df[score_col].notna()
         metrics, _, _ = evaluate_warning_predictions(
-            df, episodes_df, predictions, horizon_pitches=horizon_pitches, split=split,
-            availability=score_available,
+            df, episodes_df, predictions, horizon_pitches=horizon_pitches, split=split
         )
         if metrics["false_warnings_per_outing"] > false_warnings_per_outing + 1e-12:
             continue
@@ -338,8 +276,7 @@ def threshold_tradeoff_curve(
     candidates: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     """Evaluate every candidate threshold without selecting on test data."""
-    score_available = df[score_col].replace([np.inf, -np.inf], np.nan).notna()
-    eligible = df.loc[eligible_pitch_mask(df, split, availability=score_available)]
+    eligible = df.loc[eligible_pitch_mask(df, split)]
     finite = eligible[score_col].replace([np.inf, -np.inf], np.nan).dropna()
     if finite.empty:
         return pd.DataFrame(columns=[
@@ -352,8 +289,7 @@ def threshold_tradeoff_curve(
     for threshold in candidates:
         predictions = df[score_col].ge(threshold) & df[score_col].notna()
         metrics, _, _ = evaluate_warning_predictions(
-            df, episodes_df, predictions, horizon_pitches=horizon_pitches, split=split,
-            availability=score_available,
+            df, episodes_df, predictions, horizon_pitches=horizon_pitches, split=split
         )
         rows.append({"threshold": float(threshold), **metrics})
     return pd.DataFrame(rows)

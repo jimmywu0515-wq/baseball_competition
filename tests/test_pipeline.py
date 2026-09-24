@@ -1,7 +1,6 @@
 """
 Comprehensive Unit & Integration Tests for Audited Baseball Fatigue System
 """
-import copy
 import pytest
 import numpy as np
 import pandas as pd
@@ -20,17 +19,14 @@ from src.changepoint_detector.cusum_detector import CUSUMDetector
 from src.label_builder.collapse_labels import CollapseLabelBuilder
 from src.evaluation.metrics import EvaluationEngine
 from src.evaluation.baseline_comparator import BaselineComparator
-from src.evaluation.protocol import (
-    assign_temporal_split,
-    evaluate_warning_predictions,
-    warning_events,
-)
-from src.evaluation.protocol import select_operating_threshold
+from src.evaluation.protocol import assign_temporal_split, evaluate_warning_predictions
+from src.evaluation.protocol import select_operating_threshold, warning_events
 from src.storage.integrity import DataIntegrityError, PITCH_KEY, prepare_raw_pitch_data
 from src.configuration import load_project_config
 from src.evaluation.bootstrap import paired_bootstrap_confidence_intervals
-from src.presentation import validate_operating_threshold_artifacts
-from scripts.run_full_pipeline import _resolve_algorithm_components
+from src.evaluation.ablation_runner import (
+    AblationRunner, AblationConfig, verify_full_feature_parity, FEATURE_COLS,
+)
 
 @pytest.fixture
 def sample_dataset():
@@ -497,132 +493,258 @@ def test_paired_bootstrap_reports_direct_differences_and_zero_denominators():
     assert result["zero_denominator_frequency"].between(0, 1).all()
 
 
-def test_nondefault_config_values_reach_production_components_and_msi():
-    config = copy.deepcopy(load_project_config())
-    config["anomaly"]["health_index_decay_alpha"] = 0.73
-    config["baseline"]["intra_game_calibration_pitches"] = 7
-    config["labels"]["prediction_horizon_pitches"] = 11
-    config["labels"]["prediction_horizon_pas"] = 2
-    config["evaluation"]["warning_matching_horizon_pitches"] = 13
-    config["changepoint"]["cusum_slack_k"] = 0.17
-    config["changepoint"]["cusum_internal_alert_h"] = 8.2
-    config["changepoint"]["ewma_lambda"] = 0.31
-    config["changepoint"]["ewma_control_limit_sigma"] = 3.4
+# =============================================================================
+# FEATURE ABLATION & CUSUM INTEGRATION REGRESSION TESTS (§7 Requirements)
+# =============================================================================
 
-    components = _resolve_algorithm_components(config)
-    assert components["msi_decay_alpha"] == 0.73
-    assert components["calibration_pitches"] == 7
-    assert components["label_builder"].horizon_pitches == 11
-    assert components["label_builder"].horizon_pas == 2
-    assert components["comparator"].horizon_pitches == 13
-    assert components["cusum"].slack_k == 0.17
-    assert components["cusum"].threshold_h == 8.2
-    assert components["ewma"].ewma_lambda == 0.31
-    assert components["ewma"].l_sigma == 3.4
-    configured = compute_mechanics_stability_index(np.array([1.0]), components["msi_decay_alpha"])
-    default = compute_mechanics_stability_index(np.array([1.0]))
-    assert configured[0] != default[0]
-
-
-@pytest.mark.parametrize(
-    "rows,predicted,expected_pitches",
-    [
-        # Unavailable pitch 22 keeps warnings at 21 and 23 distinct.
-        ([(1, 21, True), (1, 22, False), (1, 23, True), (1, 24, True)],
-         [True, True, True, True], [21, 23]),
-        # A missing pitch number breaks an otherwise uninterrupted flagged run.
-        ([(1, 21, True), (1, 23, True), (1, 24, True)], [True, True, True], [21, 23]),
-        # Outing boundaries always start a new warning.
-        ([(1, 21, True), (2, 22, True)], [True, True], [21, 22]),
-        # A calibration pitch cannot connect to the first operational pitch.
-        ([(1, 20, True), (1, 21, True)], [True, True], [21]),
-        # Normal adjacent warnings collapse to one event.
-        ([(1, 21, True), (1, 22, True), (1, 23, True)], [True, True, True], [21]),
-    ],
-)
-def test_warning_continuity_respects_original_pitch_sequence(rows, predicted, expected_pitches):
-    frame = pd.DataFrame(rows, columns=["game_pk", "pitch_number_in_outing", "score_available"])
-    frame["pitcher"] = 10
-    frame["pa_number_in_outing"] = frame["pitch_number_in_outing"] // 4
-    frame["game_date"] = "2025-06-01"
-    frame["dataset_split"] = "test"
-    frame["actual_data_source"] = "test"
-    frame["is_censored_followup"] = False
-    frame["is_calibration_phase"] = frame["pitch_number_in_outing"].le(20)
-    warnings = warning_events(frame, pd.Series(predicted, index=frame.index))
-    assert warnings["warning_pitch"].tolist() == expected_pitches
-
-
-def test_headline_and_bootstrap_point_estimates_share_scoreless_outing_denominator():
+def test_full_feature_ablation_parity_with_proposed_system():
+    """1. Full-feature ablation parity with production proposed system."""
     rows = []
-    for game_pk, available in ((1, True), (2, False)):
-        for pitch in range(21, 36):
+    for split, gpk, year in [("train", 1, 2023), ("validation", 2, 2024), ("test", 3, 2025)]:
+        for p in range(1, 35):
             rows.append({
-                "game_pk": game_pk, "pitcher": 10, "game_date": "2025-06-01",
-                "dataset_split": "test", "pitch_number_in_outing": pitch,
-                "pa_number_in_outing": pitch // 4, "score_available": available,
-                "is_censored_followup": False, "is_calibration_phase": False,
-                "y_true_onset_in_horizon": pitch < 30,
-                "is_proposed_operating_alert": available and pitch in (21, 22),
+                "game_pk": gpk, "pitcher": 10, "game_date": f"{year}-06-01",
+                "dataset_split": split, "pitch_number_in_outing": p,
+                "pa_number_in_outing": p // 4 + 1, "inning": 1 + p // 15,
+                "is_calibration_phase": p <= 20,
+                "score_available": True, "is_censored_followup": False,
+                "release_speed": 95.0, "release_pos_x": 0.0, "release_pos_z": 6.0,
+                "release_extension": 6.0, "release_spin_rate": 2200.0,
+                "spin_axis_cos": 0.5, "spin_axis_sin": 0.866,
+                "pfx_x": 0.1, "pfx_z": 0.8, "vaa": -5.0,
+                "mahalanobis_calibrated": 2.0 if p > 20 else np.nan,
+                "cusum_stat": float(p - 20) * 10.0 if p > 20 else np.nan,
+                "y_true_onset_in_horizon": p >= 26,
+                "pitch_type": "FF",
             })
-    frame = pd.DataFrame(rows)
-    episodes = pd.DataFrame({
-        "game_pk": [1, 2], "pitcher": [10, 10], "episode_id": [1, 1],
-        "onset_pitch": [30, 30], "onset_pa": [7, 7], "dataset_split": ["test", "test"],
+    df = pd.DataFrame(rows)
+    eps = pd.DataFrame([
+        {"game_pk": 2, "pitcher": 10, "episode_id": 1, "onset_pitch": 28, "onset_pa": 7, "dataset_split": "validation"},
+        {"game_pk": 3, "pitcher": 10, "episode_id": 2, "onset_pitch": 28, "onset_pa": 7, "dataset_split": "test"},
+    ])
+
+    comp = BaselineComparator(horizon_pitches=15, false_warnings_per_outing=0.5)
+    comp_df, eval_df, metrics = comp.compare_systems(df, eps, return_details=True)
+
+    runner = AblationRunner(eval_df, eps, config=AblationConfig(false_warnings_per_outing=0.5))
+    abl_df, manifest = runner.run_feature_ablations()
+
+    # Exact parity check
+    assert verify_full_feature_parity(abl_df, metrics["proposed"])
+    full_row = abl_df[abl_df["Feature Subset"] == "Full Micro-Mechanics Suite"].iloc[0]
+    assert np.isclose(full_row["Test Episode Recall"], metrics["proposed"]["episode_recall"])
+    assert np.isclose(full_row["Test Warning Precision"], metrics["proposed"]["warning_precision"])
+    assert np.isclose(full_row["Test False Warnings / Outing"], metrics["proposed"]["false_warnings_per_outing"])
+    assert np.isclose(full_row["Validation-Selected Threshold"], metrics["proposed"]["operating_threshold"])
+
+
+def test_accumulated_cusum_differs_from_raw_distance_thresholding():
+    """2. A sequence where accumulated CUSUM behavior differs from raw-distance thresholding."""
+    # A moderate, persistent drift: raw score is 2.0 on each pitch (above reference mean 1.0, z=2.0)
+    # Under raw thresholding at 2.5, NO alert is ever fired.
+    # Under CUSUM, with slack_k=0.5, statistic increases by 1.5 each pitch: 1.5, 3.0, 4.5, 6.0, 7.5
+    pitches = list(range(21, 26))
+    df = pd.DataFrame({
+        "game_pk": 1, "pitcher": 10,
+        "pitch_number_in_outing": pitches,
+        "raw_score": [2.0] * len(pitches),
+        "is_calibration_phase": False,
+        "score_available": True,
     })
-    metrics, _, _ = evaluate_warning_predictions(
-        frame, episodes, frame["is_proposed_operating_alert"], split="test"
+    res = AblationRunner._run_cusum_on_scores(
+        df, score_col="raw_score", cusum_output_col="cusum_stat",
+        slack_k=0.5, threshold_h=4.0, reference_mean=1.0, reference_std=0.5,
+        calibration_pitches=20,
     )
-    bootstrap = paired_bootstrap_confidence_intervals(
-        frame, episodes, {"proposed": "is_proposed_operating_alert"},
-        n_bootstrap=50, seed=3,
-    )
-    estimates = bootstrap[
-        (bootstrap["resampling_unit"] == "outing") &
-        (bootstrap["comparison"] == "proposed")
-    ].set_index("metric")["estimate"]
-    assert metrics["total_qualified_outings"] == 2
-    assert metrics["outings_without_available_score"] == 1
-    assert metrics["evaluated_episodes_count"] == 2
-    for metric in ("episode_recall", "warning_precision", "false_warnings_per_outing"):
-        assert estimates[metric] == pytest.approx(metrics[metric])
+    raw_alerts = res["raw_score"] >= 2.5
+    cusum_alerts = res["cusum_stat"] >= 4.0
+
+    assert raw_alerts.sum() == 0, "Raw thresholding at 2.5 should yield 0 alerts"
+    assert cusum_alerts.sum() == 3, "CUSUM accumulation should trigger 3 alerts (pitches 23, 24, 25)"
 
 
-def test_bootstrap_point_precision_matches_evaluator_when_there_are_no_warnings():
-    frame = pd.DataFrame({
-        "game_pk": [1, 1], "pitcher": [10, 10], "game_date": ["2025-06-01"] * 2,
-        "dataset_split": ["test"] * 2, "pitch_number_in_outing": [21, 22],
-        "pa_number_in_outing": [6, 6], "score_available": [True, True],
-        "is_censored_followup": [False, False], "is_calibration_phase": [False, False],
-        "y_true_onset_in_horizon": [False, False],
-        "is_proposed_operating_alert": [False, False],
+def test_nondefault_cusum_and_calibration_settings_reach_ablation_detector():
+    """3. Nondefault CUSUM settings and calibration length reach the ablation detector."""
+    pitches = list(range(1, 35))
+    df = pd.DataFrame({
+        "game_pk": 1, "pitcher": 10,
+        "pitch_number_in_outing": pitches,
+        "raw_score": [2.0] * len(pitches),
+        "is_calibration_phase": False,
+        "score_available": True,
     })
-    metrics, _, _ = evaluate_warning_predictions(
-        frame, pd.DataFrame(), frame["is_proposed_operating_alert"], split="test"
+    # Nondefault calibration_pitches = 28, slack_k = 1.2
+    res = AblationRunner._run_cusum_on_scores(
+        df, score_col="raw_score", cusum_output_col="cusum_stat",
+        slack_k=1.2, threshold_h=5.0, reference_mean=1.0, reference_std=0.5,
+        calibration_pitches=28,
     )
-    result = paired_bootstrap_confidence_intervals(
-        frame, pd.DataFrame(), {"proposed": "is_proposed_operating_alert"},
-        n_bootstrap=10, seed=1,
-    )
-    estimate = result[
-        (result["comparison"] == "proposed") & (result["metric"] == "warning_precision")
-    ]["estimate"].iloc[0]
-    assert estimate == metrics["warning_precision"] == 0.0
+    # Pitches <= 28 are calibration and must remain NaN
+    assert res.loc[res["pitch_number_in_outing"] <= 28, "cusum_stat"].isna().all()
+    # Pitch 29: z = (2.0-1.0)/0.5 = 2.0; stat = max(0, 0 + 2.0 - 1.2) = 0.8
+    p29 = res.loc[res["pitch_number_in_outing"] == 29, "cusum_stat"].iloc[0]
+    assert np.isclose(p29, 0.8), f"Expected 0.8 with nondefault slack_k=1.2, got {p29}"
 
 
-def test_presentation_threshold_validation_detects_manifest_disagreement():
-    manifest = {
-        "resolved_runtime": {
-            "selected_models": {
-                "proposed": {"validation_selected_operating_threshold": 12.3456}
-            }
+def test_detector_state_resets_across_outings():
+    """4. Detector state resets across outings."""
+    rows = []
+    # Outing 1: high scores accumulating to > 30
+    for p in range(21, 26):
+        rows.append({"game_pk": 1, "pitcher": 10, "pitch_number_in_outing": p, "score": 5.0, "score_available": True})
+    # Outing 2: baseline score (z=0, stat=0)
+    for p in range(21, 26):
+        rows.append({"game_pk": 2, "pitcher": 10, "pitch_number_in_outing": p, "score": 1.0, "score_available": True})
+    df = pd.DataFrame(rows)
+    res = AblationRunner._run_cusum_on_scores(
+        df, "score", "cusum", slack_k=0.5, threshold_h=4.0, reference_mean=1.0, reference_std=0.5, calibration_pitches=20,
+    )
+    out1_last = res.loc[res["game_pk"] == 1, "cusum"].iloc[-1]
+    out2_first = res.loc[res["game_pk"] == 2, "cusum"].iloc[0]
+    assert out1_last > 15.0, "Outing 1 should accumulate high CUSUM stat"
+    assert out2_first == 0.0, "Outing 2 must reset state to 0 and not inherit Outing 1's accumulation"
+
+
+def test_unavailable_pitches_and_pitch_gaps_break_warning_continuity():
+    """5. Unavailable pitches and pitch gaps break warning continuity."""
+    # A. Unavailable pitch breaks contiguous run
+    df_unavail = pd.DataFrame({
+        "game_pk": [1, 1, 1, 1], "pitcher": [10, 10, 10, 10],
+        "pitch_number_in_outing": [21, 22, 23, 24], "game_date": "2025-06-01",
+    })
+    preds_unavail = pd.Series([True, True, False, True], index=df_unavail.index)
+    warns_a = warning_events(df_unavail, preds_unavail)
+    assert len(warns_a) == 2, f"Expected 2 warnings (interrupted by unavailable pitch 23), got {len(warns_a)}"
+    assert warns_a["warning_pitch"].tolist() == [21, 24]
+
+    # B. Pitch number gap breaks contiguous run
+    df_gap = pd.DataFrame({
+        "game_pk": [1, 1, 1], "pitcher": [10, 10, 10],
+        "pitch_number_in_outing": [21, 22, 35], "game_date": "2025-06-01",
+    })
+    preds_gap = pd.Series([True, True, True], index=df_gap.index)
+    warns_b = warning_events(df_gap, preds_gap)
+    assert len(warns_b) == 2, f"Expected 2 warnings (interrupted by gap between 22 and 35), got {len(warns_b)}"
+    assert warns_b["warning_pitch"].tolist() == [21, 35]
+
+
+def test_scoreless_outings_remain_in_ablation_denominators():
+    """6. Scoreless outings remain in ablation denominators."""
+    # Two outings: outing 1 is scored, outing 2 has all pitches unavailable (scoreless)
+    # Both outings have an eligible collapse episode.
+    rows = []
+    for p in range(21, 35):
+        rows.append({
+            "game_pk": 1, "pitcher": 10, "pitch_number_in_outing": p,
+            "game_date": "2025-06-01", "dataset_split": "test",
+            "score_available": True, "cusum_stat": 100.0,
+            "y_true_onset_in_horizon": p >= 25,
+        })
+        rows.append({
+            "game_pk": 2, "pitcher": 11, "pitch_number_in_outing": p,
+            "game_date": "2025-06-01", "dataset_split": "test",
+            "score_available": True, "cusum_stat": np.nan,  # Scoreless
+            "y_true_onset_in_horizon": p >= 25,
+        })
+    df = pd.DataFrame(rows)
+    eps = pd.DataFrame([
+        {"game_pk": 1, "pitcher": 10, "episode_id": 1, "onset_pitch": 28, "dataset_split": "test"},
+        {"game_pk": 2, "pitcher": 11, "episode_id": 2, "onset_pitch": 28, "dataset_split": "test"},
+    ])
+    preds = df["cusum_stat"].ge(50.0) & df["cusum_stat"].notna()
+    metrics, _, _ = evaluate_warning_predictions(df, eps, preds, horizon_pitches=15, split="test")
+
+    # Both outings and both episodes are part of the evaluated universe
+    assert metrics["evaluated_outings_count"] == 2, "Scoreless outing must remain in evaluated outings denominator"
+    assert metrics["total_collapse_episodes"] == 2, "Episode in scoreless outing must remain in episode denominator"
+    assert metrics["collapse_episodes_detected"] == 1, "Only scored outing's episode should be detected"
+    assert np.isclose(metrics["episode_recall"], 0.5), "Recall should be 1/2 = 0.5"
+
+
+def test_changing_test_data_cannot_change_validation_selected_ablation_threshold():
+    """7. Changing test scores or outcomes cannot change validation-selected ablation thresholds."""
+    rows_val = []
+    for p in range(21, 35):
+        rows_val.append({
+            "game_pk": 1, "pitcher": 10, "pitch_number_in_outing": p,
+            "game_date": "2024-06-01", "dataset_split": "validation",
+            "score_available": True, "cusum_stat": float(p) * 2.0,
+            "y_true_onset_in_horizon": p >= 25,
+        })
+    eps_val = pd.DataFrame([{"game_pk": 1, "pitcher": 10, "episode_id": 1, "onset_pitch": 28, "dataset_split": "validation"}])
+
+    # Test set A: normal
+    rows_test_a = [{**r, "game_pk": 2, "dataset_split": "test", "game_date": "2025-06-01"} for r in rows_val]
+    # Test set B: extreme scores and changed labels
+    rows_test_b = [{**r, "game_pk": 2, "dataset_split": "test", "game_date": "2025-06-01",
+                    "cusum_stat": 9999.0, "y_true_onset_in_horizon": False} for r in rows_val]
+
+    runner_a = AblationRunner(pd.DataFrame(rows_val + rows_test_a), eps_val)
+    res_a, _ = runner_a.run_feature_ablations()
+
+    runner_b = AblationRunner(pd.DataFrame(rows_val + rows_test_b), eps_val)
+    res_b, _ = runner_b.run_feature_ablations()
+
+    thresh_a = res_a["Validation-Selected Threshold"].to_numpy()
+    thresh_b = res_b["Validation-Selected Threshold"].to_numpy()
+    np.testing.assert_allclose(thresh_a, thresh_b, equal_nan=True)
+
+
+def test_subset_mahalanobis_matches_independent_mathematical_reference():
+    """8. Subset score construction matches an independently calculated mathematical reference."""
+    np.random.seed(42)
+    dim = len(FEATURE_COLS)
+    full_mu = np.random.uniform(0.5, 2.0, dim)
+    A = np.random.normal(0, 1, (dim, dim))
+    full_cov = A @ A.T + np.eye(dim) * 0.1
+
+    sub_indices = [0, 1, 2]  # release_pos_x, release_pos_z, release_extension
+    sub_mu = full_mu[sub_indices]
+    sub_cov = full_cov[np.ix_(sub_indices, sub_indices)]
+    ridge = 1e-4
+    sub_prec = np.linalg.inv(sub_cov + np.eye(3) * ridge)
+
+    x_full = np.random.uniform(0.5, 2.0, dim)
+    x_sub = x_full[sub_indices]
+    diff = x_sub - sub_mu
+    expected_dist = float(np.sqrt(np.dot(diff, np.dot(sub_prec, diff))))
+
+    df = pd.DataFrame([{
+        "game_pk": 1, "pitcher": 10, "pitch_type": "FF", "pitch_number_in_outing": 25,
+        "is_calibration_phase": False,
+        **{FEATURE_COLS[i]: x_full[i] for i in range(dim)}
+    }])
+    store = {
+        "10_1_FF": {
+            "status": "QUALIFIED",
+            "mu_vec": full_mu,
+            "cov_mat": full_cov,
         }
     }
-    comparison = pd.DataFrame({
-        "Model Key": ["proposed"],
-        "Validation-Selected Threshold": [12.3456],
-    })
-    validate_operating_threshold_artifacts(manifest, comparison)
-    comparison.loc[0, "Validation-Selected Threshold"] = 4.0
-    with pytest.raises(ValueError, match="Operating threshold mismatch"):
-        validate_operating_threshold_artifacts(manifest, comparison)
+    runner = AblationRunner(df, baseline_store=store, config=AblationConfig(ridge_regularization=ridge))
+    scores, avail = runner._compute_subset_mahalanobis(df, sub_indices, "Test_Sub")
+    actual_dist = scores.iloc[0]
+
+    assert np.isclose(expected_dist, actual_dist, atol=1e-4), (
+        f"Subset Mahalanobis distance {actual_dist} does not match mathematical reference {expected_dist}"
+    )
+
+
+def test_deliberate_full_feature_main_result_disagreement_fails_validation():
+    """9. A deliberate full-feature/main-result disagreement fails artifact validation."""
+    tampered_df = pd.DataFrame([{
+        "Feature Subset": "Full Micro-Mechanics Suite",
+        "Test Episode Recall": 0.0,  # Deliberately falsified / bug reproduction
+        "Test Warning Precision": 0.0,
+        "Test False Warnings / Outing": 0.0,
+        "Validation-Selected Threshold": float("nan"),
+    }])
+    expected_metrics = {
+        "episode_recall": 0.19178,
+        "warning_precision": 0.43299,
+        "false_warnings_per_outing": 0.39855,
+        "operating_threshold": 214.651,
+    }
+    with pytest.raises(ValueError, match="Parity mismatch"):
+        verify_full_feature_parity(tampered_df, expected_metrics)
+

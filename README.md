@@ -69,6 +69,21 @@ A pitcher-clustered sensitivity analysis resamples pitchers and includes all the
 
 The fixed-warning lead-time experiment holds scores, thresholds, and warning times constant while changing only the match horizon across 10, 15, 20, and 25 pitches. It reports follow-up coverage, censoring, a common-follow-up comparison, matched warning–episode records, and lead-time distributions. Improved recall under a wider window alone is not proof of earlier predictive value.
 
+## Scientific interpretation and findings
+
+> **Central Conclusion:**
+> The mechanical warning system has not demonstrated improved predictive performance over simple contextual or workload baselines. It detects more episodes than the evaluated velocity-drop benchmark, with a higher false-warning burden. Mechanical drift summaries may support interpretation, but their additional value for coaching decisions remains unvalidated.
+
+Key statistical findings:
+1. **Risk ratio confidence intervals include 1.0:** The evaluation does not establish an increased collapse risk following an alert.
+2. **Contextual comparison:** Proposed-minus-contextual intervals include 0 across primary comparisons; the evaluation has not demonstrated predictive superiority over pitch count + TTO + inning. Failing to reject the null is not proof of equivalence.
+3. **Recall vs. pitch count:** Proposed recall is lower than pitch-count recall. In the expanded evaluation, the outing-bootstrap difference estimate is -0.01518 (95% CI: [-0.02898, -0.00192]), whereas the pitcher-clustered interval is [-0.03188, +0.0000136]. Because the pitcher-clustered interval crosses zero, statistical significance depends on the clustering assumption.
+4. **Precision vs. pitch count:** Proposed warning precision (33.3%) is numerically lower than pitch count precision (37.2%).
+5. **Velocity benchmark comparison:** The proposed system detects more episodes than velocity drop, but with more false warnings. In the expanded cohort, velocity produced only one test warning; ~38.9% of outing-bootstrap replicates have undefined velocity precision due to a zero denominator (and 100% in sparse holdouts). This is not an unqualified superiority result.
+6. **Velocity scoring availability:** The ~50% velocity scoring availability reflects pitch-level scoring availability (restricted to fastball types), not an alert rate, and does not mean half the outings lack velocity scores (outing coverage is 100%).
+7. **Cohort and methodology shifts:** Discrepancies between earlier exploratory findings and the frozen evaluation cannot be attributed specifically to small-sample luck; both cohort composition and evaluation methodology changed.
+8. **Mechanical summaries vs. fatigue:** Mechanical feature summaries describe kinematic delivery deviations, but their actionable coaching value remains unvalidated. They do not establish why a collapse occurred, cannot diagnose biological fatigue or tissue stress, and do not demonstrate causal mechanisms.
+
 ## Provenance and warehouse integrity
 
 Every persisted result records its actual source (`mlb_statcast` or `simulation_benchmark`). Real-data retrieval is strict: a failed segment aborts publication. A zero-row pitcher-season is accepted only when the official MLB season record independently confirms that the pitcher threw no regular-season pitches. Simulation is available only through explicit `use_real_data=False` mode.

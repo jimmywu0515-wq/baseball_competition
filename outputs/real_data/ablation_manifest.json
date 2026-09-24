@@ -1,0 +1,129 @@
+{
+  "variants": {
+    "Full Micro-Mechanics Suite": {
+      "feature_columns": [
+        "release_pos_x",
+        "release_pos_z",
+        "release_extension",
+        "release_speed",
+        "release_spin_rate",
+        "spin_axis_cos",
+        "spin_axis_sin",
+        "pfx_x",
+        "pfx_z",
+        "vaa"
+      ],
+      "feature_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "distance_construction": "mahalanobis_calibrated \u2192 CUSUM (production reuse)",
+      "cusum_parameters": {
+        "slack_k": 0.5,
+        "threshold_h": 4.5,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      },
+      "normalization": "none",
+      "availability": "variant_specific",
+      "validation_threshold": 214.651
+    },
+    "Velocity Alone": {
+      "feature_columns": [
+        "release_speed"
+      ],
+      "feature_indices": [
+        3
+      ],
+      "distance_construction": "subset_mahalanobis \u2192 CUSUM",
+      "cusum_parameters": {
+        "slack_k": 0.5,
+        "threshold_h": 4.5,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      },
+      "normalization": "none",
+      "availability": "variant_specific",
+      "validation_threshold": null,
+      "note": "Live subset re-scoring requires complete multi-season Statcast feature cache. In local workspace, 2024-2025 raw segments reside in GCP cloud storage."
+    },
+    "Release Point Alone (X, Z, Extension)": {
+      "feature_columns": [
+        "release_pos_x",
+        "release_pos_z",
+        "release_extension"
+      ],
+      "feature_indices": [
+        0,
+        1,
+        2
+      ],
+      "distance_construction": "subset_mahalanobis \u2192 CUSUM",
+      "cusum_parameters": {
+        "slack_k": 0.5,
+        "threshold_h": 4.5,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      },
+      "normalization": "none",
+      "availability": "variant_specific",
+      "validation_threshold": null,
+      "note": "Live subset re-scoring requires complete multi-season Statcast feature cache. In local workspace, 2024-2025 raw segments reside in GCP cloud storage."
+    },
+    "Spin & Movement (rate, axis, PFX, VAA)": {
+      "feature_columns": [
+        "release_spin_rate",
+        "spin_axis_cos",
+        "spin_axis_sin",
+        "pfx_x",
+        "pfx_z",
+        "vaa"
+      ],
+      "feature_indices": [
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "distance_construction": "subset_mahalanobis \u2192 CUSUM",
+      "cusum_parameters": {
+        "slack_k": 0.5,
+        "threshold_h": 4.5,
+        "reference_mean": 1.0,
+        "reference_std": 0.5
+      },
+      "normalization": "none",
+      "availability": "variant_specific",
+      "validation_threshold": null,
+      "note": "Live subset re-scoring requires complete multi-season Statcast feature cache. In local workspace, 2024-2025 raw segments reside in GCP cloud storage."
+    }
+  },
+  "config": {
+    "cusum_slack_k": 0.5,
+    "cusum_threshold_h": 4.5,
+    "cusum_reference_mean": 1.0,
+    "cusum_reference_std": 0.5,
+    "calibration_pitches": 20,
+    "horizon_pitches": 15,
+    "false_warnings_per_outing": 0.5,
+    "ridge_regularization": 0.0001,
+    "normalization_policy": "none",
+    "availability_policy": "variant_specific",
+    "distance_construction": "subset_mahalanobis"
+  },
+  "parent_protocol_hash": "a02d63cfc72e614b9a93a959b9b2eb51ce48a4689937c0792b297bb5c8dfb62d",
+  "input_artifact": "fact_pitch_anomaly_scores (gold)",
+  "git_sha": "bc160b734fff3e22217d128ad3e62ab0724d8c1d",
+  "git_dirty": true,
+  "output_location": "/Users/jimmywu/Desktop/baseball_competition/outputs/real_data/ablation_results.csv"
+}

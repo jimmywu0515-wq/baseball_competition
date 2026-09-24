@@ -413,6 +413,13 @@ with tab3:
             f"on 2024 under the same {false_warning_allowance:g} false-warnings-per-outing upper constraint; "
             "the achieved validation rate is reported separately."
         )
+        st.info(
+            "**Scientific Review Note:** The mechanical warning system has not demonstrated "
+            "improved predictive performance over simple contextual or workload baselines. It detects "
+            "more episodes than the evaluated velocity-drop benchmark, with a higher false-warning burden. "
+            "Risk ratio confidence intervals include 1.0, proposed precision is lower than pitch count "
+            "(33.3% vs. 37.2%), and mechanical drift summaries remain unvalidated for live coaching decisions."
+        )
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
     result_dir = app_root / "outputs" / "real_data"
