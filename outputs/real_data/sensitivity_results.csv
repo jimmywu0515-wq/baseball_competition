@@ -1,8 +1,8 @@
-xwOBA Threshold,Window (PA),Horizon (Pitches),Test Episodes,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source
-0.4,3,15,1843,0.089,0.353,0.424,215.3999,0.455,mlb_statcast
-0.45,3,15,1581,0.097,0.333,0.434,211.9586,0.469,mlb_statcast
-0.5,3,15,1354,0.104,0.313,0.438,208.3604,0.493,mlb_statcast
-0.45,2,15,2034,0.109,0.407,0.455,200.315,0.485,mlb_statcast
-0.45,3,10,1581,0.056,0.24,0.398,235.195,0.43,mlb_statcast
-0.45,3,20,1581,0.135,0.424,0.408,194.411,0.478,mlb_statcast
-0.45,3,25,1581,0.17,0.484,0.405,179.6194,0.463,mlb_statcast
+xwOBA Threshold,Window (PA),Horizon (Pitches),Test Episodes,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source,run_id,protocol_sha256
+0.4,3,15,1843,0.089,0.353,0.424,215.3999,0.455,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.45,3,15,1581,0.097,0.333,0.434,211.9586,0.469,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.5,3,15,1354,0.104,0.313,0.438,208.3604,0.493,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.45,2,15,2034,0.109,0.407,0.455,200.315,0.485,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.45,3,10,1581,0.056,0.24,0.398,235.195,0.43,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.45,3,20,1581,0.135,0.424,0.408,194.411,0.478,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+0.45,3,25,1581,0.17,0.484,0.405,179.6194,0.463,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68

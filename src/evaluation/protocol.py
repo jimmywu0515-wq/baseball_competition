@@ -61,7 +61,13 @@ def assign_historical_temporal_split(
 
 
 def evaluation_opportunity_mask(df: pd.DataFrame, split: Optional[str] = None) -> pd.Series:
-    """Pitches where an operational warning could be evaluated, before score availability."""
+    """Index-aligned evaluation opportunities, excluding calibration and censored follow-up.
+
+    Requires a unique row index. Optional phase flags default to all False; when
+    a split is requested, ``dataset_split`` is required. No model score is read.
+    An empty frame returns an empty Boolean Series with the same index.
+    """
+    _validate_pitch_rows(df, split)
     mask = pd.Series(True, index=df.index, dtype=bool)
     if "is_calibration_phase" in df:
         mask &= ~df["is_calibration_phase"].fillna(True).astype(bool)
@@ -77,24 +83,71 @@ def eligible_pitch_mask(
     split: Optional[str] = None,
     availability: Optional[pd.Series] = None,
 ) -> pd.Series:
-    """Return warning opportunities with a usable score under one shared policy."""
+    """Intersect opportunities with index-aligned Boolean availability.
+
+    A missing availability argument uses Boolean ``score_available`` when present,
+    otherwise finite ``mahalanobis_calibrated`` scores, otherwise all opportunities.
+    Numeric scores must be converted to a finite mask by the caller. Missing mask
+    values mean unavailable; duplicate or unaligned indices raise ValueError.
+    """
     mask = evaluation_opportunity_mask(df, split)
     if availability is not None:
-        mask &= availability.reindex(df.index).fillna(False).astype(bool)
+        mask &= _aligned_boolean(availability, df.index, "availability")
     elif "score_available" in df:
-        mask &= df["score_available"].fillna(False).astype(bool)
+        mask &= _aligned_boolean(df["score_available"], df.index, "score_available")
     elif "mahalanobis_calibrated" in df:
-        mask &= df["mahalanobis_calibrated"].notna()
+        mask &= np.isfinite(pd.to_numeric(df["mahalanobis_calibrated"], errors="coerce"))
     return mask
 
 
+def _aligned_boolean(values: pd.Series, index: pd.Index, name: str) -> pd.Series:
+    if not isinstance(values, pd.Series) or not values.index.is_unique or not index.is_unique:
+        raise ValueError(f"{name} must be an index-aligned Series with unique indices")
+    if not index.isin(values.index).all():
+        raise ValueError(f"{name} is missing pitch-row indices")
+    aligned = values.reindex(index)
+    if not (pd.api.types.is_bool_dtype(aligned.dtype) or aligned.dropna().map(lambda x: isinstance(x, (bool, np.bool_))).all()):
+        raise ValueError(f"{name} must contain Boolean values, not numeric scores")
+    return aligned.fillna(False).astype(bool)
+
+
+def _validate_pitch_rows(df: pd.DataFrame, split: Optional[str] = None) -> None:
+    if not df.index.is_unique:
+        raise ValueError("Pitch-row index must be unique")
+    required = {"game_pk", "pitcher", "pitch_number_in_outing"}
+    if split is not None:
+        required.add("dataset_split")
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Pitch rows missing required columns: {sorted(missing)}")
+    check = df.loc[df["dataset_split"].eq(split)] if split is not None else df
+    if check.empty:
+        return
+    if check[list(required - {"dataset_split"})].isna().any().any():
+        raise ValueError("Outing identifiers and pitch numbers cannot be missing")
+    number = pd.to_numeric(check["pitch_number_in_outing"], errors="coerce")
+    if number.isna().any() or (number <= 0).any() or (number % 1 != 0).any():
+        raise ValueError("pitch_number_in_outing must contain positive integers")
+    if check.duplicated(["game_pk", "pitcher", "pitch_number_in_outing"]).any():
+        raise ValueError("Duplicate pitch identity within an outing")
+
+
 def build_evaluation_universe(df: pd.DataFrame, split: Optional[str] = None) -> pd.DataFrame:
-    """Return the authoritative qualified-outing population for an evaluation split."""
+    """One row per qualified (game_pk, pitcher) in ``split``, before score filtering.
+
+    Requires pitch identity columns and a unique row index. The result has a fresh
+    RangeIndex and stable columns game_pk, pitcher, plus available date/split fields.
+    Empty input returns those columns with zero rows.
+    """
+    _validate_pitch_rows(df, split)
     work = df
     if split is not None and "dataset_split" in work:
         work = work[work["dataset_split"].eq(split)]
     columns = ["game_pk", "pitcher"]
     optional = [column for column in ("game_date", "dataset_split") if column in work]
+    for column in optional:
+        if work.groupby(columns, dropna=False)[column].nunique(dropna=False).gt(1).any():
+            raise ValueError(f"Conflicting {column} within a qualified outing")
     return work[columns + optional].drop_duplicates(columns).reset_index(drop=True)
 
 
@@ -113,11 +166,18 @@ def warning_events(
     availability: Optional[pd.Series] = None,
     split: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Collapse consecutive flagged pitches into distinct warning events."""
+    """Return starts of adjacent valid flagged runs on the original pitch sequence.
+
+    Requires unique indexed pitch rows and index-aligned Boolean predictions and
+    availability. Calibration and unavailable rows break runs; follow-up censoring
+    is deliberately ignored here. Output has a fresh RangeIndex and stable columns
+    even when no warnings occur. Warning identity is (game_pk, pitcher, warning_pitch).
+    """
     columns = [
         "game_pk", "pitcher", "warning_pitch", "warning_pa", "game_date",
         "dataset_split", "actual_data_source",
     ]
+    _validate_pitch_rows(df, split)
     if df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -125,9 +185,16 @@ def warning_events(
     # Keep the exact index-aligned semantics while avoiding a Python loop over
     # every outing and warning.
     work = df.copy()
-    available = eligible_pitch_mask(work, split=split, availability=availability)
+    available = _aligned_boolean(availability, df.index, "availability") if availability is not None else (
+        _aligned_boolean(df["score_available"], df.index, "score_available") if "score_available" in df else
+        pd.Series(True, index=df.index, dtype=bool)
+    )
+    if "is_calibration_phase" in work:
+        available &= ~work["is_calibration_phase"].fillna(True).astype(bool)
+    if split is not None:
+        available &= work["dataset_split"].eq(split)
     work["_prediction"] = (
-        predictions.reindex(df.index).fillna(False).astype(bool) & available
+        _aligned_boolean(predictions, df.index, "predictions") & available
     ).to_numpy()
     work = work.sort_values(
         ["game_pk", "pitcher", "pitch_number_in_outing"], kind="stable"
@@ -168,7 +235,20 @@ def evaluate_warning_predictions(
     split: Optional[str] = None,
     availability: Optional[pd.Series] = None,
 ) -> Tuple[Dict[str, Any], pd.DataFrame, pd.DataFrame]:
-    """Evaluate on all qualified outings; unavailable scores cannot generate warnings."""
+    """Evaluate common outings/episodes and return (metrics, warnings, matches).
+
+    Pitch rows require unique identity, split, and ordered pitch number; episodes
+    require game_pk, pitcher, onset_pitch and optional episode_id/onset_pa. All
+    model availability is an index-aligned Boolean mask. Raw warning starts are
+    retained before follow-up censoring; only evaluable warnings enter precision
+    and false-warning rates. Empty warnings/matches retain stable columns.
+    """
+    if horizon_pitches <= 0:
+        raise ValueError("horizon_pitches must be positive")
+    _validate_pitch_rows(df, split)
+    predictions = _aligned_boolean(predictions, df.index, "predictions")
+    if availability is not None:
+        availability = _aligned_boolean(availability, df.index, "availability")
     split_mask = pd.Series(True, index=df.index)
     if split is not None and "dataset_split" in df:
         split_mask &= df["dataset_split"].eq(split)
@@ -179,15 +259,33 @@ def evaluate_warning_predictions(
     eval_df = df.loc[available_mask].copy()
     warnings = warning_events(
         split_df,
-        predictions.reindex(split_df.index),
-        availability=availability.reindex(split_df.index) if availability is not None else None,
+        predictions.loc[split_df.index],
+        availability=availability.loc[split_df.index] if availability is not None else None,
     )
     episodes = episodes_for_split(episodes_df, split)
     if not episodes.empty:
+        required = {"game_pk", "pitcher", "onset_pitch"}
+        if not required.issubset(episodes.columns):
+            raise ValueError(f"Episodes missing columns: {sorted(required - set(episodes.columns))}")
+        if episodes[list(required)].isna().any().any():
+            raise ValueError("Episode outing identifiers and onset cannot be missing")
+        identity = ["game_pk", "pitcher", "episode_id"] if "episode_id" in episodes else ["game_pk", "pitcher", "onset_pitch"]
+        if episodes.duplicated(identity).any():
+            raise ValueError("Duplicate episode identity")
         episodes = episodes.merge(
             universe[["game_pk", "pitcher"]], on=["game_pk", "pitcher"], how="inner"
         )
 
+    # Follow-up censoring affects evaluability, never the raw warning timestamp.
+    if not warnings.empty:
+        censored = split_df.set_index(["game_pk", "pitcher", "pitch_number_in_outing"])["is_censored_followup"] if "is_censored_followup" in split_df else None
+        warnings["is_evaluable_warning"] = (
+            ~pd.Series([bool(censored.loc[(r.game_pk, r.pitcher, r.warning_pitch)]) for r in warnings.itertuples()], index=warnings.index)
+            if censored is not None else True
+        )
+    else:
+        warnings["is_evaluable_warning"] = pd.Series(dtype=bool)
+    evaluable_warnings = warnings.loc[warnings["is_evaluable_warning"]]
     matches = []
     matched_episode_keys = set()
     matched_warning_indices = set()
@@ -195,7 +293,7 @@ def evaluate_warning_predictions(
         key: group.sort_values("onset_pitch")
         for key, group in episodes.groupby(["game_pk", "pitcher"], sort=False)
     } if not episodes.empty else {}
-    for outing_key, outing_warnings in warnings.groupby(["game_pk", "pitcher"], sort=False):
+    for outing_key, outing_warnings in evaluable_warnings.groupby(["game_pk", "pitcher"], sort=False):
         outing_episodes = episode_groups.get(outing_key)
         if outing_episodes is None:
             continue
@@ -224,7 +322,9 @@ def evaluate_warning_predictions(
                 "lead_time_pas": max(0, int(episode.get("onset_pa", 0) - warning["warning_pa"])),
             })
 
-    match_df = pd.DataFrame(matches)
+    match_df = pd.DataFrame(matches, columns=list(warnings.columns) + [
+        "episode_id", "onset_pitch", "onset_pa", "lead_time_pitches", "lead_time_pas"
+    ])
     if not warnings.empty:
         warnings = warnings.copy()
         warnings["is_matched_warning"] = warnings.index.isin(matched_warning_indices)
@@ -236,11 +336,11 @@ def evaluate_warning_predictions(
         episode_outing_keys = set(map(tuple, episodes[["game_pk", "pitcher"]].drop_duplicates().values))
     warning_outing_keys = set()
     if not warnings.empty:
-        warning_outing_keys = set(map(tuple, warnings[["game_pk", "pitcher"]].drop_duplicates().values))
+        warning_outing_keys = set(map(tuple, evaluable_warnings[["game_pk", "pitcher"]].drop_duplicates().values))
     clean_outing_keys = set(map(tuple, outing_keys.values)) - episode_outing_keys
     clean_with_warning = clean_outing_keys & warning_outing_keys
 
-    total_warnings = len(warnings)
+    total_warnings = len(evaluable_warnings)
     matched_warnings = len(matched_warning_indices)
     false_warnings = total_warnings - matched_warnings
     total_episodes = len(episodes)
@@ -259,21 +359,23 @@ def evaluate_warning_predictions(
         "evaluation_opportunity_pitches": opportunity_count,
         "score_available_evaluation_pitches": available_count,
         "pitch_level_scoring_coverage": (
-            float(available_count / opportunity_count) if opportunity_count else 0.0
+            float(available_count / opportunity_count) if opportunity_count else np.nan
         ),
         "outing_level_scoring_coverage": (
-            float(len(available_outings) / total_outings) if total_outings else 0.0
+            float(len(available_outings) / total_outings) if total_outings else np.nan
         ),
         "total_collapse_episodes": int(total_episodes),
         "evaluated_episodes_count": int(total_episodes),
         "collapse_episodes_detected": int(len(matched_episode_keys)),
-        "episode_recall": float(len(matched_episode_keys) / total_episodes) if total_episodes else 0.0,
-        "warning_precision": float(matched_warnings / total_warnings) if total_warnings else 0.0,
+        "episode_recall": float(len(matched_episode_keys) / total_episodes) if total_episodes else np.nan,
+        "warning_precision": float(matched_warnings / total_warnings) if total_warnings else np.nan,
+        "master_warning_count": int(len(warnings)),
+        "censored_warnings": int(len(warnings) - total_warnings),
         "total_warnings": int(total_warnings),
         "false_warnings": int(false_warnings),
-        "false_warnings_per_outing": float(false_warnings / total_outings) if total_outings else 0.0,
+        "false_warnings_per_outing": float(false_warnings / total_outings) if total_outings else np.nan,
         "clean_outing_false_alarm_rate": (
-            float(len(clean_with_warning) / len(clean_outing_keys)) if clean_outing_keys else 0.0
+            float(len(clean_with_warning) / len(clean_outing_keys)) if clean_outing_keys else np.nan
         ),
         "lead_time_mean_pitches": float(leads.mean()) if len(leads) else np.nan,
         "lead_time_median_pitches": float(leads.median()) if len(leads) else np.nan,
@@ -284,6 +386,8 @@ def evaluate_warning_predictions(
             "warning_precision": int(total_warnings),
             "false_warnings_per_outing": int(total_outings),
             "clean_outing_false_alarm_rate": int(len(clean_outing_keys)),
+            "pitch_level_scoring_coverage": opportunity_count,
+            "outing_level_scoring_coverage": total_outings,
         },
     }
     return metrics, warnings, match_df
@@ -302,7 +406,12 @@ def select_operating_threshold(
     eligible = df.loc[eligible_pitch_mask(df, split, availability=score_available)]
     finite = eligible[score_col].replace([np.inf, -np.inf], np.nan).dropna()
     if finite.empty:
-        return np.inf, {}
+        predictions = pd.Series(False, index=df.index)
+        metrics, _, _ = evaluate_warning_predictions(
+            df, episodes_df, predictions, horizon_pitches=horizon_pitches,
+            split=split, availability=score_available,
+        )
+        return np.inf, metrics
 
     candidates = np.unique(np.quantile(finite, np.linspace(0.0, 1.0, 31)))
     candidates = np.r_[np.inf, candidates[::-1]]
@@ -318,8 +427,8 @@ def select_operating_threshold(
         if metrics["false_warnings_per_outing"] > false_warnings_per_outing + 1e-12:
             continue
         key = (
-            metrics["episode_recall"],
-            metrics["warning_precision"],
+            -1.0 if np.isnan(metrics["episode_recall"]) else metrics["episode_recall"],
+            -1.0 if np.isnan(metrics["warning_precision"]) else metrics["warning_precision"],
             -metrics["false_warnings_per_outing"],
         )
         if key > best_key:

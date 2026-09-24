@@ -13,6 +13,17 @@ from src.evaluation.protocol import (
 )
 
 
+def _score_availability(frame: pd.DataFrame, column: Optional[str]) -> Optional[pd.Series]:
+    if column is None:
+        return None
+    if column not in frame:
+        raise ValueError(f"Availability column {column!r} is missing")
+    values = frame[column]
+    if pd.api.types.is_bool_dtype(values.dtype):
+        return values.fillna(False).astype(bool)
+    return pd.Series(np.isfinite(pd.to_numeric(values, errors="coerce")), index=frame.index)
+
+
 METRICS = (
     "episode_recall",
     "warning_precision",
@@ -41,11 +52,7 @@ def _outing_sufficient_statistics(
         ] if not split_episodes.empty else pd.DataFrame()
         for model_key, prediction_col in model_predictions.items():
             availability_col = (model_availability or {}).get(model_key)
-            availability = (
-                outing[availability_col].notna()
-                if availability_col and availability_col in outing
-                else None
-            )
+            availability = _score_availability(outing, availability_col)
             metrics, warnings, _ = evaluate_warning_predictions(
                 outing, outing_episodes, outing[prediction_col],
                 horizon_pitches=horizon_pitches, split=split,
@@ -89,6 +96,7 @@ def _metrics_from_totals(totals: np.ndarray, columns: Dict[str, int]) -> Tuple[n
     risk_ratio = np.divide(
         alert_risk, no_alert_risk, out=np.full(len(alert_risk), np.nan), where=~risk_invalid
     )
+    risk_ratio[(~alert_zero) & (~no_alert_zero) & (no_alert_risk == 0) & (alert_risk > 0)] = np.inf
     values = np.column_stack([recall, precision, false_rate, risk_ratio])
     invalid = {
         "episode_recall": recall_zero,
@@ -111,13 +119,19 @@ def paired_bootstrap_confidence_intervals(
     model_availability: Optional[Dict[str, str]] = None,
 ) -> pd.DataFrame:
     """Use the same resampled outings or pitchers for every compared model."""
+    if n_bootstrap <= 0:
+        raise ValueError("n_bootstrap must be positive")
     episodes = episodes if episodes is not None else pd.DataFrame()
     stats = _outing_sufficient_statistics(
         df, episodes, model_predictions, split=split, horizon_pitches=horizon_pitches,
         model_availability=model_availability,
     )
     if stats.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=[
+            "resampling_unit", "comparison", "metric", "estimate", "ci_lower_95",
+            "ci_upper_95", "zero_denominator_frequency", "bootstrap_samples",
+            "valid_replicates", "interval_status", "cluster_count",
+        ])
 
     value_columns = [
         "episode_detected_n", "episode_n", "matched_warning_n", "warning_n",
@@ -139,19 +153,16 @@ def paired_bootstrap_confidence_intervals(
         point_totals[model] = arrays[model].sum(axis=0, keepdims=True)
         prediction_col = model_predictions[model]
         availability_col = (model_availability or {}).get(model)
-        availability = (
-            df[availability_col].notna()
-            if availability_col and availability_col in df
-            else None
-        )
+        availability = _score_availability(df, availability_col)
         ordinary, _, _ = evaluate_warning_predictions(
             df, episodes, df[prediction_col], split=split,
             horizon_pitches=horizon_pitches, availability=availability,
         )
         point, _ = _metrics_from_totals(point_totals[model], column_index)
-        point[0, 0] = ordinary["episode_recall"]
-        point[0, 1] = ordinary["warning_precision"]
-        point[0, 2] = ordinary["false_warnings_per_outing"]
+        for metric_idx, metric in enumerate(METRICS[:3]):
+            expected, observed = ordinary[metric], point[0, metric_idx]
+            if not (np.isnan(expected) and np.isnan(observed)) and not np.isclose(expected, observed, rtol=0, atol=1e-12):
+                raise ValueError(f"Bootstrap point estimate disagrees with evaluator for {model} {metric}: {observed} vs {expected}")
         point_values[model] = point
 
     rng = np.random.default_rng(seed)
@@ -172,10 +183,12 @@ def paired_bootstrap_confidence_intervals(
                 "comparison": model,
                 "metric": metric,
                 "estimate": float(point[0, metric_idx]),
-                "ci_lower_95": float(np.quantile(finite, 0.025)) if len(finite) else np.nan,
-                "ci_upper_95": float(np.quantile(finite, 0.975)) if len(finite) else np.nan,
+                "ci_lower_95": float(np.quantile(finite, 0.025)) if len(finite) >= 20 else np.nan,
+                "ci_upper_95": float(np.quantile(finite, 0.975)) if len(finite) >= 20 else np.nan,
                 "zero_denominator_frequency": float(invalid[metric].mean()),
                 "bootstrap_samples": n_bootstrap,
+                "valid_replicates": int(len(finite)),
+                "interval_status": "ok" if len(finite) >= 20 else "insufficient_valid_replicates",
                 "cluster_count": len(units),
             })
 
@@ -192,10 +205,12 @@ def paired_bootstrap_confidence_intervals(
                     "comparison": f"proposed_minus_{competitor}",
                     "metric": metric,
                     "estimate": float(point_proposed[0, metric_idx] - point_competitor[0, metric_idx]),
-                    "ci_lower_95": float(np.quantile(finite, 0.025)) if len(finite) else np.nan,
-                    "ci_upper_95": float(np.quantile(finite, 0.975)) if len(finite) else np.nan,
+                    "ci_lower_95": float(np.quantile(finite, 0.025)) if len(finite) >= 20 else np.nan,
+                    "ci_upper_95": float(np.quantile(finite, 0.975)) if len(finite) >= 20 else np.nan,
                     "zero_denominator_frequency": float((~np.isfinite(difference)).mean()),
                     "bootstrap_samples": n_bootstrap,
+                    "valid_replicates": int(len(finite)),
+                    "interval_status": "ok" if len(finite) >= 20 else "insufficient_valid_replicates",
                     "cluster_count": len(units),
                 })
     return pd.DataFrame(rows)

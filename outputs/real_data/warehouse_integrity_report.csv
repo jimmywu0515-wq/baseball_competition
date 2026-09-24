@@ -1,9 +1,8 @@
-check_name,status,row_count,details,actual_data_source,checked_at_utc
-raw_season_2023,PASS,93476,2023-03-30 00:00:00 through 2023-10-01 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-raw_season_2024,PASS,89924,2024-03-21 00:00:00 through 2024-09-29 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-raw_season_2025,PASS,65996,2025-03-27 00:00:00 through 2025-09-28 00:00:00,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-raw_pitch_key_uniqueness,PASS,249396,zero duplicate pitch keys,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-gold_score_label_alignment,PASS,237156,identical ordered pitch keys,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-qualified_raw_referential_integrity,PASS,237156,all qualified keys exist in raw,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-game_scope,PASS,249396,MLB regular season only,mlb_statcast,2026-09-21T19:42:21.742115+00:00
-duckdb_reload,PASS,249396,all production tables reloaded and revalidated,mlb_statcast,2026-09-21T19:42:21.767613+00:00
+check_name,status,row_count,details,actual_data_source,checked_at_utc,run_id,protocol_sha256
+raw_season_2023,PASS,93476,2023-03-30 00:00:00 through 2023-10-01 00:00:00,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+raw_season_2024,PASS,89924,2024-03-21 00:00:00 through 2024-09-29 00:00:00,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+raw_season_2025,PASS,65996,2025-03-27 00:00:00 through 2025-09-28 00:00:00,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+raw_pitch_key_uniqueness,PASS,249396,zero duplicate pitch keys,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+gold_score_label_alignment,PASS,237156,identical ordered pitch keys,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+qualified_raw_referential_integrity,PASS,237156,all qualified keys exist in raw,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+game_scope,PASS,249396,MLB regular season only,mlb_statcast,2026-09-24T18:03:12.644269+00:00,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68

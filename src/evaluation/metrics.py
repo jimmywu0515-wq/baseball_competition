@@ -43,9 +43,15 @@ class EvaluationEngine:
         eval_df = df.loc[mask].copy()
         y_true = eval_df["y_true_onset_in_horizon"].astype(int).to_numpy()
         predictions = eval_df[alert_col].fillna(False).astype(bool).to_numpy()
-        p_alert = float(y_true[predictions].mean()) if predictions.any() else 0.0
+        p_alert = float(y_true[predictions].mean()) if predictions.any() else np.nan
         p_no_alert = float(y_true[~predictions].mean()) if (~predictions).any() else np.nan
-        risk_ratio = p_alert / p_no_alert if np.isfinite(p_no_alert) and p_no_alert > 0 else np.nan
+        if not np.isfinite(p_alert) or not np.isfinite(p_no_alert):
+            risk_ratio, risk_status = np.nan, "missing_exposure_group"
+        elif p_no_alert == 0:
+            risk_ratio = np.inf if p_alert > 0 else np.nan
+            risk_status = "infinite" if p_alert > 0 else "zero_over_zero"
+        else:
+            risk_ratio, risk_status = p_alert / p_no_alert, "defined"
 
         score_col = "cusum_stat" if "cusum_stat" in eval_df else "mahalanobis_calibrated"
         finite = eval_df[score_col].replace([np.inf, -np.inf], np.nan).notna()
@@ -59,6 +65,7 @@ class EvaluationEngine:
 
         metrics.update({
             "risk_ratio_alert_vs_no_alert": risk_ratio,
+            "risk_ratio_status": risk_status,
             "pitch_pr_auc": pr_auc,
             "evaluation_split": evaluation_split or "all",
             "actual_data_sources": sorted(map(str, eval_df["actual_data_source"].dropna().unique()))

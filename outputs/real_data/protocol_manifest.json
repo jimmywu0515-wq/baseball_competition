@@ -1,15 +1,32 @@
 {
+  "schema_version": 2,
+  "run_id": "08a3a0b1ccde4ff4a59b9a36690cd1a3",
   "protocol_name": "2023_train_2024_validation_2025_test",
-  "protocol_sha256": "ffee26c9335fe779634380dff41a6db4a4278481d385753c4ef91b25facf66d7",
-  "recorded_at_utc": "2026-09-21T18:37:59.908046+00:00",
+  "protocol_sha256": "43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68",
+  "protocol_hash_fields": [
+    "anomaly_scoring",
+    "baseline",
+    "bootstrap",
+    "cohort",
+    "detectors",
+    "horizons",
+    "labels",
+    "qualification",
+    "random_seeds",
+    "selected_models",
+    "temporal_protocol",
+    "threshold_selection"
+  ],
+  "recorded_at_utc": "2026-09-24T16:59:25.013990+00:00",
   "actual_data_source": "mlb_statcast",
-  "baseline_update_policy": "For every outing, use at most the 12 most recent qualified outings with dates strictly before the scoring date; 2025 baselines may update only from completed prior outings.",
+  "baseline_update_policy": "For every outing, use at most 12 most recent qualified outings with dates strictly before the scoring date; 2025 baselines may update only from completed prior outings.",
   "threshold_policy": "Select on 2024 only; keep fixed for every 2025 result and bootstrap replicate.",
   "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
   "resolved_runtime": {
     "source_control": {
-      "commit_sha": "bc160b734fff3e22217d128ad3e62ab0724d8c1d",
-      "worktree_dirty": true
+      "commit_sha": "3f90096d3bf77c93a721d78a0017bae5291edc6a",
+      "worktree_dirty": true,
+      "source_patch_sha256": "9010461ec01860e26f93b73cbe439830a0409a3e7bb583a8a05a9233d40abb7c"
     },
     "cohort": {
       "identifier": "pretest_40_seed_20250917",
@@ -79,6 +96,12 @@
         25
       ]
     },
+    "labels": {
+      "window_pa_size": 3,
+      "blended_xwoba_threshold": 0.45,
+      "min_barrels_in_window": 2,
+      "min_bb_hbp_in_window": 2
+    },
     "bootstrap": {
       "samples": 1000,
       "seed": 2025,
@@ -92,10 +115,11 @@
     "locations": {
       "raw_cache": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\data\\raw",
       "warehouse": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\data\\baseball_warehouse.duckdb",
-      "output_directory": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\outputs\\real_data"
+      "output_directory": "C:\\Users\\cwu\\OneDrive - CHICAGO FIRE\\Desktop\\baseball_competition\\outputs\\.staging\\08a3a0b1ccde4ff4a59b9a36690cd1a3"
     },
     "selected_models": {
       "proposed": {
+        "threshold_status": "selected",
         "validation_selected_operating_threshold": 211.95860000000002,
         "validation_episode_recall": 0.10130111524163568,
         "validation_warning_precision": 0.32732732732732733,
@@ -103,6 +127,7 @@
         "allowed_maximum_false_warnings_per_outing": 0.5
       },
       "contextual": {
+        "threshold_status": "selected",
         "validation_selected_operating_threshold": 0.517946818033778,
         "validation_episode_recall": 0.10315985130111524,
         "validation_warning_precision": 0.32599118942731276,
@@ -110,6 +135,7 @@
         "allowed_maximum_false_warnings_per_outing": 0.5
       },
       "velocity": {
+        "threshold_status": "selected",
         "validation_selected_operating_threshold": 4.4466666666666725,
         "validation_episode_recall": 0.00046468401486988845,
         "validation_warning_precision": 1.0,
@@ -117,6 +143,7 @@
         "allowed_maximum_false_warnings_per_outing": 0.5
       },
       "pitch_count": {
+        "threshold_status": "selected",
         "validation_selected_operating_threshold": 78.0,
         "validation_episode_recall": 0.11663568773234201,
         "validation_warning_precision": 0.36063218390804597,

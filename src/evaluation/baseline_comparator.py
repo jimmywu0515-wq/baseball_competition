@@ -83,13 +83,20 @@ class BaselineComparator:
     @staticmethod
     def _pitch_statistics(df: pd.DataFrame, predictions: pd.Series, score_col: str,
                           split: str = "test") -> Dict[str, float]:
-        mask = eligible_pitch_mask(df, split, availability=df[score_col].notna())
+        availability = pd.Series(np.isfinite(pd.to_numeric(df[score_col], errors="coerce")), index=df.index)
+        mask = eligible_pitch_mask(df, split, availability=availability)
         part = df.loc[mask]
         y_true = part["y_true_onset_in_horizon"].astype(int).to_numpy()
         y_pred = predictions.reindex(part.index).fillna(False).astype(bool).to_numpy()
-        p_alert = float(y_true[y_pred].mean()) if y_pred.any() else 0.0
+        p_alert = float(y_true[y_pred].mean()) if y_pred.any() else np.nan
         p_no_alert = float(y_true[~y_pred].mean()) if (~y_pred).any() else np.nan
-        risk_ratio = p_alert / p_no_alert if np.isfinite(p_no_alert) and p_no_alert > 0 else np.nan
+        if not np.isfinite(p_alert) or not np.isfinite(p_no_alert):
+            risk_ratio, risk_status = np.nan, "missing_exposure_group"
+        elif p_no_alert == 0:
+            risk_ratio = np.inf if p_alert > 0 else np.nan
+            risk_status = "infinite" if p_alert > 0 else "zero_over_zero"
+        else:
+            risk_ratio, risk_status = p_alert / p_no_alert, "defined"
         finite = part[score_col].replace([np.inf, -np.inf], np.nan).notna()
         if finite.any() and part.loc[finite, "y_true_onset_in_horizon"].nunique() > 1:
             precision, recall, _ = precision_recall_curve(
@@ -98,7 +105,8 @@ class BaselineComparator:
             pr_auc = float(auc(recall, precision))
         else:
             pr_auc = np.nan
-        return {"risk_ratio_alert_vs_no_alert": risk_ratio, "pitch_pr_auc": pr_auc}
+        return {"risk_ratio_alert_vs_no_alert": risk_ratio,
+                "risk_ratio_status": risk_status, "pitch_pr_auc": pr_auc}
 
     def compare_systems(
         self,
@@ -176,7 +184,7 @@ class BaselineComparator:
             test_metrics, warnings, matches = evaluate_warning_predictions(
                 df, collapse_episodes_df, df[prediction_col],
                 horizon_pitches=self.horizon_pitches, split="test",
-                availability=df[score_col].notna(),
+                availability=pd.Series(np.isfinite(pd.to_numeric(df[score_col], errors="coerce")), index=df.index),
             )
             test_metrics.update(self._pitch_statistics(df, df[prediction_col], score_col))
             test_metrics["operating_threshold"] = threshold
@@ -220,7 +228,9 @@ class BaselineComparator:
                 "Test Clean Outing FAR": fmt(test_metrics["clean_outing_false_alarm_rate"]),
                 "Test Pitch PR-AUC": fmt(test_metrics["pitch_pr_auc"]),
                 "Test Risk Ratio (Alert vs No Alert)": fmt(test_metrics["risk_ratio_alert_vs_no_alert"], 2),
+                "Test Risk Ratio Status": test_metrics["risk_ratio_status"],
                 "Validation-Selected Threshold": fmt(threshold, 4),
+                "Threshold Status": "no_alert" if not np.isfinite(threshold) else "selected",
                 "Test Qualified Outings": test_metrics["total_qualified_outings"],
                 "Test Outings With Available Score": test_metrics["outings_with_available_score"],
                 "Test Outings Without Available Score": test_metrics["outings_without_available_score"],

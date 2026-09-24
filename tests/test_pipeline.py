@@ -607,14 +607,15 @@ def test_bootstrap_point_precision_matches_evaluator_when_there_are_no_warnings(
     estimate = result[
         (result["comparison"] == "proposed") & (result["metric"] == "warning_precision")
     ]["estimate"].iloc[0]
-    assert estimate == metrics["warning_precision"] == 0.0
+    assert np.isnan(estimate) and np.isnan(metrics["warning_precision"])
 
 
 def test_presentation_threshold_validation_detects_manifest_disagreement():
     manifest = {
+        "schema_version": 2,
         "resolved_runtime": {
             "selected_models": {
-                "proposed": {"validation_selected_operating_threshold": 12.3456}
+                "proposed": {"threshold_status": "selected", "validation_selected_operating_threshold": 12.3456}
             }
         }
     }

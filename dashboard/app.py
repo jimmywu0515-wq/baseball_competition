@@ -70,10 +70,7 @@ def load_data():
     sm = StorageManager(base_dir=str(app_root))
     scored_df = sm.load_table("fact_pitch_anomaly_scores", layer="gold")
     if scored_df.empty:
-        from src.data_ingest.statcast_loader import StatcastLoader
-        from scripts.run_full_pipeline import run_pipeline
-        run_pipeline(base_dir=str(app_root))
-        scored_df = sm.load_table("fact_pitch_anomaly_scores", layer="gold")
+        raise RuntimeError("No published score table; run the canonical pipeline first")
 
     labels_df = sm.load_table("fact_collapse_labels", layer="gold")
     alerts_df = sm.load_table("fact_alert_events", layer="gold")
@@ -86,10 +83,16 @@ def load_data():
 st.sidebar.title("⚾ 投手機制穩定度監控系統")
 st.sidebar.caption("Mechanics Stability Index (MSI) — 基於微觀物理特徵漂移之預警系統")
 
-scored_df, labels_df, alerts_df, comp_df, run_manifest = load_data()
+try:
+    scored_df, labels_df, alerts_df, comp_df, run_manifest = load_data()
+except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    st.error(f"Published evaluation is unavailable: {exc}")
+    st.stop()
 resolved_runtime = run_manifest["resolved_runtime"]
 proposed_settings = selected_model_settings(run_manifest, "proposed")
 operating_threshold = proposed_settings["validation_selected_operating_threshold"]
+if proposed_settings["threshold_status"] == "no_alert":
+    operating_threshold = float("inf")
 cusum_internal_h = resolved_runtime["detectors"]["cusum"]["internal_alert_h"]
 false_warning_allowance = resolved_runtime["threshold_selection"][
     "allowed_maximum_false_warnings_per_outing"

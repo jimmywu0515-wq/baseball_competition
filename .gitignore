@@ -9,6 +9,12 @@ __pycache__/
 # Local Data Lakehouse (Keep data out of git)
 data/
 outputs/case_studies/*.png
+outputs/.staging/
+outputs/.smoke_*/
+outputs/.promotion_test_*/
+outputs/.real_data.*.previous/
+outputs/.simulation.*.previous/
+outputs/.real_run_attempt.log
 
 # Environment Variables & Keys
 .env

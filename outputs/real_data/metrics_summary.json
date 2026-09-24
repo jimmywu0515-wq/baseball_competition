@@ -13,6 +13,8 @@
   "collapse_episodes_detected": 153,
   "episode_recall": 0.0967741935483871,
   "warning_precision": 0.33260869565217394,
+  "master_warning_count": 647,
+  "censored_warnings": 187,
   "total_warnings": 460,
   "false_warnings": 307,
   "false_warnings_per_outing": 0.4336158192090395,
@@ -25,9 +27,12 @@
     "episode_recall": 1581,
     "warning_precision": 460,
     "false_warnings_per_outing": 708,
-    "clean_outing_false_alarm_rate": 37
+    "clean_outing_false_alarm_rate": 37,
+    "pitch_level_scoring_coverage": 43693,
+    "outing_level_scoring_coverage": 708
   },
   "risk_ratio_alert_vs_no_alert": 1.0578822610462262,
+  "risk_ratio_status": "defined",
   "pitch_pr_auc": 0.3499719245893551,
   "operating_threshold": 211.95860000000002,
   "validation_false_warnings_per_outing": 0.4686192468619247,
@@ -61,6 +66,7 @@
   "preselected_pitchers_count": 40,
   "qualified_outings": 2599,
   "qualified_pitches": 237156,
-  "protocol_sha256": "ffee26c9335fe779634380dff41a6db4a4278481d385753c4ef91b25facf66d7",
+  "protocol_sha256": "43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68",
+  "run_id": "08a3a0b1ccde4ff4a59b9a36690cd1a3",
   "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look."
 }

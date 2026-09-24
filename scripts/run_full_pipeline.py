@@ -5,6 +5,7 @@ import json
 import hashlib
 import logging
 import os
+import uuid
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ from src.feature_engineering.mechanics_features import compute_kinematics_and_va
 from src.feature_engineering.rolling_stats import compute_rolling_features
 from src.label_builder.collapse_labels import CollapseLabelBuilder
 from src.reporting import render_validation_report
-from src.presentation import validate_operating_threshold_artifacts
+from src.presentation import validate_operating_threshold_artifacts, validate_release_artifacts
 from src.storage.adapter import StorageManager
 from src.storage.integrity import (
     audit_persisted_warehouse,
@@ -61,6 +62,10 @@ MODEL_PREDICTIONS = {
     "contextual": "is_contextual_operating_alert",
     "velocity": "is_velocity_operating_alert",
     "pitch_count": "is_pitch_count_operating_alert",
+}
+MODEL_SCORE_COLUMNS = {
+    "proposed": "score_proposed_cusum", "contextual": "score_contextual",
+    "velocity": "score_velocity_drop", "pitch_count": "score_pitch_count",
 }
 
 
@@ -154,9 +159,11 @@ def _pitcher_model_evaluation(
         ] if not episodes_df.empty else pd.DataFrame()
         name = pitcher_df["pitcher_name"].dropna().iloc[0] if pitcher_df["pitcher_name"].notna().any() else str(pitcher)
         for model_key, prediction_col in MODEL_PREDICTIONS.items():
+            scores = pd.to_numeric(pitcher_df[MODEL_SCORE_COLUMNS[model_key]], errors="coerce")
             metrics, _, _ = evaluate_warning_predictions(
                 pitcher_df, pitcher_episodes, pitcher_df[prediction_col],
                 horizon_pitches=horizon_pitches, split="test",
+                availability=pd.Series(np.isfinite(scores), index=pitcher_df.index),
             )
             rows.append({
                 "pitcher": int(pitcher), "pitcher_name": name, "model_key": model_key,
@@ -177,12 +184,14 @@ def _write_protocol_manifest(
     frozen_thresholds: dict,
     validation_metrics: dict,
     resolved_runtime: dict,
+    run_id: str,
 ) -> dict:
     selected_models = {}
     for model_key, threshold in frozen_thresholds.items():
         metrics = validation_metrics.get(model_key, {})
         selected_models[model_key] = {
-            "validation_selected_operating_threshold": threshold,
+            "threshold_status": "no_alert" if not np.isfinite(threshold) else "selected",
+            "validation_selected_operating_threshold": float(threshold) if np.isfinite(threshold) else None,
             "validation_episode_recall": metrics.get("episode_recall"),
             "validation_warning_precision": metrics.get("warning_precision"),
             "validation_false_warnings_per_outing": metrics.get("false_warnings_per_outing"),
@@ -191,10 +200,18 @@ def _write_protocol_manifest(
             ]["allowed_maximum_false_warnings_per_outing"],
         }
     resolved = {**resolved_runtime, "selected_models": selected_models}
-    canonical = json.dumps(_json_ready(resolved), sort_keys=True, separators=(",", ":"))
+    # Run-specific source state and machine paths are recorded, but do not alter
+    # the scientific protocol identity for otherwise identical configurations.
+    canonical_fields = {key: value for key, value in resolved.items()
+                        if key not in {"source_control", "locations"}}
+    canonical = json.dumps(_json_ready(canonical_fields), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    protocol_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     manifest = {
+        "schema_version": 2,
+        "run_id": run_id,
         "protocol_name": "2023_train_2024_validation_2025_test",
-        "protocol_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "protocol_sha256": protocol_hash,
+        "protocol_hash_fields": sorted(canonical_fields),
         "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
         "actual_data_source": actual_source,
         "baseline_update_policy": (
@@ -211,7 +228,7 @@ def _write_protocol_manifest(
         "resolved_runtime": resolved,
     }
     with (output_dir / "protocol_manifest.json").open("w", encoding="utf-8") as handle:
-        json.dump(_json_ready(manifest), handle, indent=2)
+        json.dump(_json_ready(manifest), handle, indent=2, allow_nan=False)
     return manifest
 
 
@@ -228,10 +245,39 @@ def _git_state(base_path: Path) -> dict:
                 [executable, "status", "--porcelain"], cwd=base_path, check=True,
                 capture_output=True, text=True,
             ).stdout.strip())
-            return {"commit_sha": sha, "worktree_dirty": dirty}
+            patch = subprocess.run(
+                [executable, "diff", "--binary", "HEAD", "--", "src", "scripts", "config", "dashboard", "tests", "README.md"],
+                cwd=base_path, check=True, capture_output=True,
+            ).stdout
+            untracked = subprocess.run(
+                [executable, "ls-files", "--others", "--exclude-standard", "--", "src", "scripts", "config", "dashboard", "tests", "README.md"],
+                cwd=base_path, check=True, capture_output=True, text=True,
+            ).stdout.splitlines()
+            digest = hashlib.sha256(patch)
+            for relative in sorted(untracked):
+                digest.update(relative.encode("utf-8"))
+                digest.update((base_path / relative).read_bytes())
+            return {"commit_sha": sha, "worktree_dirty": dirty,
+                    "source_patch_sha256": digest.hexdigest()}
         except (FileNotFoundError, subprocess.CalledProcessError):
             continue
-    return {"commit_sha": None, "worktree_dirty": None}
+    return {"commit_sha": None, "worktree_dirty": None, "source_patch_sha256": None}
+
+
+def _promote_staged_outputs(stage_dir: Path, published_dir: Path, run_id: str) -> None:
+    """Validate then replace a completed directory, restoring it on rename failure."""
+    validate_release_artifacts(stage_dir)
+    backup_dir = published_dir.with_name(f".{published_dir.name}.{run_id}.previous")
+    if published_dir.exists():
+        os.replace(published_dir, backup_dir)
+    try:
+        os.replace(stage_dir, published_dir)
+    except Exception:
+        if backup_dir.exists():
+            os.replace(backup_dir, published_dir)
+        raise
+    if backup_dir.exists():
+        logger.info("Previous published output retained at %s", backup_dir)
 
 
 def _plot_threshold_curves(curves: pd.DataFrame, output_path: Path) -> None:
@@ -279,7 +325,7 @@ def _build_case_studies(
     metrics, warnings, matches = evaluate_warning_predictions(
         df, episodes, df["is_proposed_operating_alert"],
         horizon_pitches=matching_horizon_pitches, split="test",
-        availability=df["score_proposed_cusum"].notna(),
+        availability=pd.Series(np.isfinite(pd.to_numeric(df["score_proposed_cusum"], errors="coerce")), index=df.index),
     )
     test_df = df[df["dataset_split"].eq("test")]
     episode_keys = set()
@@ -367,7 +413,9 @@ def run_pipeline(
     components = _resolve_algorithm_components(config)
     start_dt = start_dt or config["ingestion"]["start_date"]
     end_dt = end_dt or config["ingestion"]["end_date"]
-    output_dir = base_path / "outputs" / ("real_data" if use_real_data else "simulation")
+    published_dir = base_path / "outputs" / ("real_data" if use_real_data else "simulation")
+    run_id = uuid.uuid4().hex
+    output_dir = base_path / "outputs" / ".staging" / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
     sm = StorageManager(base_dir=str(base_path))
     loader = StatcastLoader(cache_dir=str(base_path / "data" / "raw"))
@@ -554,6 +602,12 @@ def run_pipeline(
             "warning_matching_pitches": matching_horizon,
             "sensitivity_matching_pitches": list(map(int, evaluation_config["sensitivity_horizons"])),
         },
+        "labels": {
+            "window_pa_size": label_builder.window_pa_size,
+            "blended_xwoba_threshold": label_builder.blended_xwoba_threshold,
+            "min_barrels_in_window": label_builder.min_barrels_in_window,
+            "min_bb_hbp_in_window": label_builder.min_bb_hbp_in_window,
+        },
         "bootstrap": {
             "samples": int(evaluation_config["bootstrap_samples"]),
             "seed": int(evaluation_config["bootstrap_seed"]),
@@ -576,7 +630,7 @@ def run_pipeline(
     def freeze_primary_protocol(thresholds):
         manifest_holder["manifest"] = _write_protocol_manifest(
             output_dir, actual_source, thresholds, comparator.validation_metrics,
-            resolved_runtime,
+            resolved_runtime, run_id,
         )
 
     comparison_df, evaluated_df, model_metrics = comparator.compare_systems(
@@ -642,12 +696,13 @@ def run_pipeline(
         "qualified_outings": int(len(dim_games)),
         "qualified_pitches": int(len(qualified_df)),
         "protocol_sha256": protocol_manifest["protocol_sha256"],
+        "run_id": run_id,
         "prior_2025_exposure_disclosure": protocol_manifest["prior_2025_exposure_disclosure"],
     })
 
     alerts_df = warning_events(
         evaluated_df, evaluated_df["is_proposed_operating_alert"],
-        availability=evaluated_df["score_proposed_cusum"].notna(),
+        availability=pd.Series(np.isfinite(pd.to_numeric(evaluated_df["score_proposed_cusum"], errors="coerce")), index=evaluated_df.index),
     )
     if not alerts_df.empty:
         alerts_df = alerts_df.rename(columns={"warning_pitch": "alert_pitch_number"})
@@ -700,7 +755,12 @@ def run_pipeline(
         false_warnings_per_outing=float(evaluation_config["false_warnings_per_outing"]),
         horizon_pitches=matching_horizon,
     )
-    ablations = ablation_runner.run_feature_ablations()
+    ablations = ablation_runner.run_feature_ablations(
+        comparator.frozen_thresholds["proposed"], model_metrics["proposed"],
+        protocol_manifest["protocol_sha256"],
+        comparator.warning_records.loc[comparator.warning_records["model_key"].eq("proposed")]
+        if not comparator.warning_records.empty else pd.DataFrame(columns=["game_pk", "pitcher", "warning_pitch"]),
+    )
     sensitivity = ablation_runner.run_sensitivity_analysis()
     for result in (ablations, sensitivity):
         result["Actual Data Source"] = actual_source
@@ -767,6 +827,9 @@ def run_pipeline(
         "mart_pitcher_model_evaluation": pitcher_model_evaluation,
         "mart_evaluation_coverage": evaluation_coverage,
     }
+    for frame in frames.values():
+        if "actual_data_source" not in frame and "Actual Data Source" not in frame:
+            frame["actual_data_source"] = actual_source
     integrity_report = audit_pipeline_frames(frames, actual_source, required_years)
     frames["warehouse_integrity_report"] = integrity_report
     layer_by_table = {
@@ -796,14 +859,6 @@ def run_pipeline(
         "mart_evaluation_coverage": "gold",
         "warehouse_integrity_report": "gold",
     }
-    sm.save_tables_atomically([
-        (frame, name, layer_by_table[name]) for name, frame in frames.items()
-    ])
-    integrity_report = audit_persisted_warehouse(sm, actual_source, required_years)
-    sm.save_tables_atomically([
-        (integrity_report, "warehouse_integrity_report", "gold")
-    ])
-
     output_frames = {
         "model_comparison.csv": comparison_df,
         "historical_2024_model_comparison.csv": historical_comparison,
@@ -825,17 +880,32 @@ def run_pipeline(
         "evaluation_coverage.csv": evaluation_coverage,
     }
     for filename, frame in output_frames.items():
+        frame["run_id"] = run_id
+        frame["protocol_sha256"] = protocol_manifest["protocol_sha256"]
         frame.to_csv(output_dir / filename, index=False)
     case_index = _build_case_studies(
         evaluated_df, episodes_df, output_dir / "case_studies", matching_horizon,
         components["msi_decay_alpha"], calibration_pitches,
         float(label_config["blended_xwoba_threshold"]),
     )
+    case_index["run_id"] = run_id
+    case_index["protocol_sha256"] = protocol_manifest["protocol_sha256"]
+    case_index.to_csv(output_dir / "case_studies" / "case_study_index.csv", index=False)
 
     with (output_dir / "metrics_summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(_json_ready(metrics_summary), handle, indent=2)
+        json.dump(_json_ready(metrics_summary), handle, indent=2, allow_nan=False)
     validate_operating_threshold_artifacts(protocol_manifest, comparison_df)
     render_validation_report(output_dir)
+    validate_release_artifacts(output_dir)
+    sm.save_tables_atomically([
+        (frame, name, layer_by_table[name]) for name, frame in frames.items()
+    ])
+    persisted_integrity = audit_persisted_warehouse(sm, actual_source, required_years)
+    sm.save_tables_atomically([
+        (persisted_integrity, "warehouse_integrity_report", "gold")
+    ])
+    _promote_staged_outputs(output_dir, published_dir, run_id)
+    sm.close()
     logger.info("Pipeline complete. Requested=%s actual=%s", requested_mode, actual_source)
     return metrics_summary, comparison_df, ablations
 

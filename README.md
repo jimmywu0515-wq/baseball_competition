@@ -1,5 +1,7 @@
 # MLB Pitcher Mechanics Stability Index
 
+**Evidence status:** `outputs/real_data/` contains validated schema version 2 run `08a3a0b1ccde4ff4a59b9a36690cd1a3`. Its full-feature ablation matches the primary model. Subset ablations are marked unavailable because historical subset covariance baselines were not retained.
+
 This project tests whether pitch-level mechanical drift is associated with a collapse episode in the next 15 pitches. The Mechanics Stability Index (MSI) is an inverse transform of Mahalanobis distance from a pitcher- and pitch-type-specific historical baseline. It is not a direct measure of fatigue, and this observational analysis does not establish causality.
 
 ## Frozen evaluation protocol
@@ -61,6 +63,16 @@ The CUSUM internal accumulation/diagnostic parameter, the validation-selected op
 
 The velocity benchmark calculates four-seamer (`FF`), sinker (`SI`), and cutter (`FC`) drops independently and assigns scores by row index. A velocity risk ratio below one is not evidence that velocity is a lagging indicator.
 
+## Shared evaluation contract
+
+`src/evaluation/protocol.py` defines the common qualified-outing population before score filtering. Opportunities exclude calibration and incomplete follow-up. Model availability is a separate index-aligned Boolean mask; numeric scores must first be converted to a finite-value mask. Rows need unique indices and unique `(game_pk, pitcher, pitch_number_in_outing)` identities. The warning builder keeps starts on the original ordered sequence, including starts later censored from evaluation. An unavailable pitch, absent pitch number, calibration boundary, or outing boundary breaks a warning run. CUSUM retains its statistic across unavailable pitches; warning-event continuity does not reset detector state.
+
+An onset matches only a strictly earlier warning no more than the configured horizon before it; warning and episode matches are one-to-one. Episode recall uses all eligible observed episodes in qualified outings, including scoreless outings. Precision uses matched evaluable warnings divided by all evaluable warnings. False warnings per outing uses unmatched evaluable warnings divided by all qualified outings. Clean-outing false-alarm rate uses clean outings with an evaluable warning divided by all clean outings. Pitch coverage uses available scoring opportunities over all protocol opportunities; outing coverage uses outings with at least one available opportunity over all qualified outings. A missing denominator is N/A (JSON `null`), whereas an observed miss is zero. Risk ratios with an absent exposure group are undefined; positive alert risk over zero comparison risk is infinite. A selected no-alert threshold has status `no_alert` and a null numeric threshold.
+
+The configuration loader rejects obsolete aliases and validates parameter bounds. Manifest schema version 2 contains a run ID, deterministic protocol hash of resolved settings and thresholds, resolved runtime values, source commit, dirty state, and a source patch digest. Timestamps and machine paths are outside the protocol hash. Derived CSV artifacts carry both run and protocol IDs. Old manifest versions are rejected with a regeneration message. The output set is staged under `outputs/.staging/<run_id>` and validated before promotion; the warehouse batch and output-directory swap are separate operations, so a process failure between them can briefly leave different run IDs in those stores.
+
+Run the offline production smoke test with `python -m pytest tests/test_offline_smoke.py -q -p no:cacheprovider`. Validate a completed output directory with `python scripts/validate_artifacts.py outputs/real_data`. A complete real-data rerun uses `python scripts/run_full_pipeline.py`; it requires the approved 2023-2025 Statcast cache or retrieval access. No paid cloud job is needed for ordinary CI.
+
 ## Uncertainty and lead time
 
 Paired bootstrap intervals resample the same complete qualified 2025 outings used by the headline evaluator and use identical sampled outings for every model. Frozen thresholds are never reselected within bootstrap samples. The output reports 95% intervals for episode recall, warning precision, false warnings per outing, risk ratio, and direct proposed-minus-comparator differences. Zero-denominator replicate frequency is reported explicitly, and bootstrap point estimates are tested against the ordinary evaluator before resampling.
@@ -92,6 +104,7 @@ pip install -r requirements.txt
 python -m pytest tests -v
 python scripts/prepare_expanded_cohort.py
 python scripts/run_full_pipeline.py
+python scripts/validate_artifacts.py outputs/real_data
 python scripts/audit_warehouse.py
 streamlit run dashboard/app.py
 ```
@@ -144,11 +157,11 @@ gcloud storage ls gs://YOUR_PROJECT_ID-baseball-lakehouse/results/real_data/
 bq ls YOUR_PROJECT_ID:baseball_analytics
 ```
 
-## Implementation status and reproducibility checklist
+## Archived evidence and reproducibility checklist
 
-The expanded evaluation completed locally on 2026-09-21: **40 pitchers** were selected deterministically using only 2023–2024 MLB records, all 40 passed the downstream qualification rule, and 267,983 raw pitches were audited across 115 loaded segments and 5 independently verified empty seasons. The qualifier retained 237,156 pitches across 2,599 outings.
+The current verified run selected 40 pitchers and audited 267,983 cached raw pitches. The qualifier retained 237,156 pitches across 2,599 outings.
 
-On the locked retrospective 2025 holdout, the proposed system used a 2024-selected threshold of `211.9586` across 708 qualified outings and 1,581 collapse episodes. Episode recall was `0.0968`, warning precision was `0.3326`, and false warnings per outing were `0.4336`. These results are observational and must retain the prior-2025-exposure disclosure above.
+The verified 2025 comparison selected a proposed threshold of `211.9586` on 2024 validation, then evaluated 708 qualified outings and 1,581 observed episodes. It reports episode recall `0.096774`, warning precision `0.332609`, and `0.433616` false warnings per outing. These observational results retain the prior-2025-exposure disclosure. Subset ablations remain unavailable when historical covariance baselines are absent.
 
 ### Milestone tracking
 
@@ -158,9 +171,9 @@ On the locked retrospective 2025 holdout, the proposed system used a 2024-select
 | **2. Statcast Ingestion & Verification** | `outputs/cohort_expansion/ingestion_segments.csv` | **Completed** | 120 segments audited (115 loaded, 5 verified zero-pitch seasons via official MLB Stats API). |
 | **3. Resumable GCP Cloud Architecture** | `scripts/deploy_gcp.sh`, `scripts/cloud_entrypoint.py` | **Completed** | Dual-stage Cloud Run Jobs (`baseball-prepare` & `baseball-evaluate`) with GCS checkpointing & BigQuery publishing. |
 | **4. Vectorized Event-Matching Pipeline** | `src/evaluation/protocol.py`, `src/anomaly_scorer/` | **Completed** | Vectorized CUSUM/Mahalanobis scoring eliminating downstream evaluation bottlenecks. |
-| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` / `baseball-evaluate` | **Completed** | End-to-end Mahalanobis scoring, CUSUM detection, sensitivity analyses, and 1,000 paired bootstrap iterations completed. |
-| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Passed** | Eight persisted-warehouse checks pass, including referential integrity, pitch-key uniqueness, source, season, and regular-season scope. |
-| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Completed** | The prior 6-pitcher artifacts were replaced by the verified 40-pitcher locked retrospective holdout results. |
+| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` | **Validated run** | Run `08a3a0b1ccde4ff4a59b9a36690cd1a3` passed the release artifact validator. |
+| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Passed** | The current run passed the persisted warehouse audit. |
+| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Validated run** | Staged artifacts were validated and promoted together. |
 
 ---
 

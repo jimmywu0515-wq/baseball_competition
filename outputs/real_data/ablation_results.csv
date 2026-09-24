@@ -1,5 +1,5 @@
-Feature Subset,Test Pitch PR-AUC,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Validation-Selected Threshold,Validation False Warnings / Outing,Actual Data Source
-Velocity Alone,0.333,0.001,1.0,0.0,6.6403,0.0,mlb_statcast
-"Release Point Alone (X, Z, Extension)",0.336,0.0,0.0,0.0,15.1401,0.0,mlb_statcast
-"Spin & Movement (rate, axis, PFX, VAA)",0.335,0.0,0.0,0.0,163.2387,0.0,mlb_statcast
-Full Micro-Mechanics Suite,0.344,0.0,0.0,0.0,,0.0,mlb_statcast
+Feature Subset,status,reason,protocol_sha256,Test Episode Recall,Test Warning Precision,Test False Warnings / Outing,Test Qualified Outings,Test Evaluated Episodes,Test Warnings,Test False Warnings,Test Pitch Scoring Coverage,Validation-Selected Threshold,warning_ids_sha256,Actual Data Source,run_id
+Full Micro-Mechanics Suite,verified,Independent evaluation of frozen primary predictions,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68,0.0967741935483871,0.33260869565217394,0.4336158192090395,708.0,1581.0,460.0,307.0,0.9806376307417665,211.95860000000002,a97ca83d761be5139db579951f9a5bcf4194123a004bfdd9215621c7a4c30434,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3
+Velocity Alone,unavailable,Subset historical covariance baselines were not retained,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68,,,,,,,,,,,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3
+"Release Point Alone (X, Z, Extension)",unavailable,Subset historical covariance baselines were not retained,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68,,,,,,,,,,,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3
+"Spin & Movement (rate, axis, PFX, VAA)",unavailable,Subset historical covariance baselines were not retained,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68,,,,,,,,,,,mlb_statcast,08a3a0b1ccde4ff4a59b9a36690cd1a3

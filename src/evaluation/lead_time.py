@@ -73,11 +73,13 @@ def fixed_warning_horizon_analysis(
     distribution_rows = []
     for model_key, prediction_col in model_predictions.items():
         availability_col = (model_availability or {}).get(model_key)
-        availability = (
-            eligibility_frame[availability_col].notna()
-            if availability_col and availability_col in eligibility_frame
-            else None
-        )
+        availability = None
+        if availability_col is not None:
+            if availability_col not in eligibility_frame:
+                raise ValueError(f"Missing availability column {availability_col!r}")
+            values = eligibility_frame[availability_col]
+            availability = (values.fillna(False).astype(bool) if pd.api.types.is_bool_dtype(values.dtype)
+                            else pd.Series(np.isfinite(pd.to_numeric(values, errors="coerce")), index=values.index))
         eligible = eligibility_frame.loc[
             eligible_pitch_mask(eligibility_frame, split, availability=availability)
         ].copy()

@@ -1,5 +1,5 @@
-case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,lead_time_pitches
-TP,776144,2025-09-28,663903,Brady Singer,mlb_statcast,65.0,66.0,1.0
-FP,776146,2025-09-27,607536,Kyle Freeland,mlb_statcast,62.0,,
-FN,776145,2025-09-28,592332,Kevin Gausman,mlb_statcast,,4.0,
-TN,776137,2025-09-28,657277,Logan Webb,mlb_statcast,,,
+case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,lead_time_pitches,run_id,protocol_sha256
+TP,776144,2025-09-28,663903,Brady Singer,mlb_statcast,65.0,66.0,1.0,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+FP,776146,2025-09-27,607536,Kyle Freeland,mlb_statcast,62.0,,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+FN,776145,2025-09-28,592332,Kevin Gausman,mlb_statcast,,4.0,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+TN,776137,2025-09-28,657277,Logan Webb,mlb_statcast,,,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+from src.presentation import load_protocol_manifest
 
 
 def _read_csv(output_dir: Path, filename: str) -> pd.DataFrame:
@@ -13,12 +14,12 @@ def _read_csv(output_dir: Path, filename: str) -> pd.DataFrame:
 
 
 def _markdown(frame: pd.DataFrame, empty_message: str = "No rows.") -> str:
-    return frame.to_markdown(index=False) if not frame.empty else empty_message
+    return frame.where(pd.notna(frame), "N/A").to_markdown(index=False) if not frame.empty else empty_message
 
 
 def render_validation_report(output_dir: Path) -> Path:
     metrics = json.loads((output_dir / "metrics_summary.json").read_text(encoding="utf-8"))
-    manifest = json.loads((output_dir / "protocol_manifest.json").read_text(encoding="utf-8"))
+    manifest = load_protocol_manifest(output_dir)
     comparison = _read_csv(output_dir, "model_comparison.csv")
     historical = _read_csv(output_dir, "historical_2024_model_comparison.csv")
     bootstrap = _read_csv(output_dir, "bootstrap_confidence_intervals.csv")
@@ -75,11 +76,12 @@ def render_validation_report(output_dir: Path) -> Path:
         f"{metrics['data_coverage']['observed_end']}.\n"
         f"- Protocol hash: `{manifest['protocol_sha256']}`.\n"
         f"- Exposure disclosure: {manifest['prior_2025_exposure_disclosure']}\n"
-        "- The >=50-pitch outing rule is retrospective and cannot be known at a live pitch.\n"
+        f"- The >={metrics['minimum_pitches_per_outing']}-pitch outing rule is retrospective and cannot be known at a live pitch.\n"
         "- 2025 baselines update only from qualified outings on strictly earlier dates.\n"
         "- Every model uses the same qualified-outing population and a 2024-selected threshold under "
         f"an upper constraint of {allowance} false warnings per outing; this is not the achieved rate.\n"
-        "- Score-unavailable pitches cannot warn, break consecutive-warning runs, and do not remove their outing or collapse episodes from headline denominators.\n"
+        "- Score-unavailable pitches cannot warn and break consecutive-warning runs; follow-up censoring removes warnings from evaluable counts without moving raw starts. Outings and eligible episodes remain in headline denominators.\n"
+        "- N/A means a missing denominator; an alert-group risk divided by zero comparison risk is infinite, while absent exposure groups are undefined.\n"
         "- Wider matching windows can mechanically increase recall and are not, alone, evidence of earlier prediction.\n"
         f"- Pitcher-clustered intervals use {metrics.get('test_pitchers_count', 'the test')} pitchers.\n\n"
         "## Dataset accounting\n\n" + _markdown(accounting) +
