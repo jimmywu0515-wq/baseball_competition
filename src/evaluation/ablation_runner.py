@@ -22,7 +22,7 @@ import pandas as pd
 from sklearn.metrics import auc, precision_recall_curve
 
 from src.evaluation.protocol import (
-    eligible_pitch_mask,
+    evaluation_opportunity_mask,
     evaluate_warning_predictions,
     select_operating_threshold,
 )
@@ -68,6 +68,7 @@ class AblationConfig:
     horizon_pitches: int = 15
     false_warnings_per_outing: float = 0.5
     ridge_regularization: float = 1e-4
+    shrinkage_lambda: float = 0.35
     normalization_policy: str = "none"  # "none" = raw subset Mahalanobis; fixed CUSUM params
     availability_policy: str = "variant_specific"
     distance_construction: str = "subset_mahalanobis"
@@ -79,6 +80,7 @@ class AblationManifest:
     variants: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     config: Optional[Dict[str, Any]] = None
     parent_protocol_hash: Optional[str] = None
+    run_id: Optional[str] = None
     input_artifact: str = "fact_pitch_anomaly_scores (persisted gold)"
     git_sha: Optional[str] = None
     git_dirty: Optional[bool] = None
@@ -92,38 +94,33 @@ def verify_full_feature_parity(
     ablation_df: pd.DataFrame,
     expected_metrics: Dict[str, Any],
 ) -> bool:
-    """Verify that the Full Micro-Mechanics Suite variant agrees with the production proposed system.
-
-    Raises ValueError if there is any statistically meaningful discrepancy.
-    """
+    """Require exact, finite production parity before labeling an ablation verified."""
     match = ablation_df[ablation_df["Feature Subset"] == "Full Micro-Mechanics Suite"]
-    if match.empty:
-        raise ValueError("Ablation dataframe does not contain 'Full Micro-Mechanics Suite'")
+    if len(match) != 1:
+        raise ValueError("Ablation dataframe must contain one 'Full Micro-Mechanics Suite' row")
     row = match.iloc[0]
-
-    checks = [
+    checks = (
         ("Test Episode Recall", "episode_recall"),
         ("Test Warning Precision", "warning_precision"),
         ("Test False Warnings / Outing", "false_warnings_per_outing"),
-    ]
+        ("Test Qualified Outings", "total_qualified_outings"),
+        ("Test Evaluated Episodes", "evaluated_episodes_count"),
+        ("Test Warnings", "total_warnings"),
+        ("Test False Warnings", "false_warnings"),
+        ("Validation-Selected Threshold", "operating_threshold"),
+    )
     for abl_col, exp_key in checks:
         if exp_key in expected_metrics:
-            val = float(row[abl_col])
-            exp = float(expected_metrics[exp_key])
-            if abs(val - exp) > 0.001 and abs(val - round(exp, 4)) > 0.001:
+            val, exp = row[abl_col], expected_metrics[exp_key]
+            if pd.isna(val) and (exp is None or pd.isna(exp) or np.isinf(exp)):
+                continue
+            if pd.isna(val) or exp is None or pd.isna(exp) or not np.isclose(
+                float(val), float(exp), rtol=0.0, atol=1e-12,
+            ):
                 raise ValueError(
                     f"Parity mismatch for {abl_col}: ablation reports {val}, "
-                    f"expected {exp} (diff: {abs(val - exp):.6f})"
+                    f"expected {exp}"
                 )
-
-    if "operating_threshold" in expected_metrics and expected_metrics["operating_threshold"] is not None:
-        thresh_val = float(row["Validation-Selected Threshold"])
-        thresh_exp = float(expected_metrics["operating_threshold"])
-        if abs(thresh_val - thresh_exp) > 0.01 and abs(thresh_val - round(thresh_exp, 4)) > 0.01:
-            raise ValueError(
-                f"Parity mismatch for Validation-Selected Threshold: ablation reports {thresh_val}, "
-                f"expected {thresh_exp} (diff: {abs(thresh_val - thresh_exp):.6f})"
-            )
     return True
 
 
@@ -168,33 +165,27 @@ class AblationRunner:
         Pitch gaps and outing boundaries reset the detector.
         """
         result = df.copy()
+        if not result.index.is_unique:
+            raise ValueError("Ablation pitch-row index must be unique")
         cusum_vals = np.full(len(result), np.nan)
 
         for _, outing in result.groupby(["game_pk", "pitcher"], sort=False):
             outing_sorted = outing.sort_values("pitch_number_in_outing")
             statistic = 0.0
-
-            for idx in outing_sorted.index:
-                row = result.loc[idx]
-                pitch_number = int(row.get(
-                    "pitch_number_in_outing",
-                    row.get("pitch_number_in_game", 0),
-                ))
-                score = pd.to_numeric(row.get(score_col), errors="coerce")
-                # Match production eligibility: pitch > calibration, score available, finite
-                score_avail = bool(row.get(f"_ablation_avail_{score_col}",
-                                           np.isfinite(score) if pd.notna(score) else False))
-                eligible = (
-                    pitch_number > calibration_pitches
-                    and score_avail
-                    and np.isfinite(score)
-                )
-                if not eligible:
+            positions = result.index.get_indexer(outing_sorted.index)
+            pitch_numbers = pd.to_numeric(outing_sorted["pitch_number_in_outing"], errors="coerce").to_numpy()
+            scores = pd.to_numeric(outing_sorted[score_col], errors="coerce").to_numpy()
+            avail_col = f"_ablation_avail_{score_col}"
+            availability = (outing_sorted[avail_col].fillna(False).to_numpy(dtype=bool)
+                            if avail_col in outing_sorted else np.isfinite(scores))
+            for position, pitch_number, score, score_avail in zip(
+                positions, pitch_numbers, scores, availability,
+            ):
+                if not (pitch_number > calibration_pitches and score_avail and np.isfinite(score)):
                     continue
-
                 z = (score - reference_mean) / max(reference_std, 1e-6)
                 statistic = max(0.0, statistic + z - slack_k)
-                cusum_vals[result.index.get_loc(idx)] = round(statistic, 3)
+                cusum_vals[position] = round(statistic, 3)
 
         result[cusum_output_col] = cusum_vals
         return result
@@ -203,7 +194,6 @@ class AblationRunner:
         self,
         df: pd.DataFrame,
         feature_indices: List[int],
-        variant_name: str,
     ) -> Tuple[pd.Series, pd.Series]:
         """Compute Mahalanobis distance using the historical covariance submatrix.
 
@@ -214,21 +204,8 @@ class AblationRunner:
         Returns (score_series, availability_series).
         """
         subset_cols = [FEATURE_COLS[i] for i in feature_indices]
-        n = len(df)
         scores = pd.Series(np.nan, index=df.index, dtype=float)
         available = pd.Series(False, index=df.index, dtype=bool)
-
-        if self.baseline_store is None:
-            logger.warning(
-                "No baseline store provided; subset Mahalanobis cannot be computed. "
-                "Falling back to Euclidean on z-scores for %s.",
-                variant_name,
-            )
-            self.manifest.variants[variant_name] = {
-                "distance_construction": "euclidean_zscore (fallback)",
-                "limitation": "No baseline store; cannot compute subset Mahalanobis.",
-            }
-            return self._euclidean_fallback(df, feature_indices, variant_name)
 
         calibration = df.get(
             "is_calibration_phase", pd.Series(False, index=df.index)
@@ -261,6 +238,13 @@ class AblationRunner:
                 full_cov = np.asarray(baseline["cov_mat"], dtype=float)
 
                 subset_mu = full_mu[feature_indices]
+                early = outing.loc[
+                    outing["pitch_type"].eq(pitch_type) &
+                    calibration.loc[outing.index], subset_cols,
+                ].apply(pd.to_numeric, errors="coerce")
+                if len(early) >= 3:
+                    subset_mu = ((1.0 - self.config.shrinkage_lambda) * subset_mu +
+                                 self.config.shrinkage_lambda * early.mean().to_numpy(float))
                 subset_cov = full_cov[np.ix_(feature_indices, feature_indices)]
 
                 # Re-regularize and invert the *submatrix* (not a slice of prec_mat)
@@ -270,47 +254,23 @@ class AblationRunner:
                 except np.linalg.LinAlgError:
                     subset_prec = np.linalg.pinv(reg_cov)
 
-                # Compute Mahalanobis distance using calibrated mean if available
-                # For ablation consistency, use the historical mean (not calibrated)
-                # since we don't have subset-specific calibrated means
+                # Apply the same early-outing shrinkage rule as the primary scorer.
                 valid_idx = pt_mask & pd.Series(complete, index=df.loc[pt_mask].index).reindex(df.index, fill_value=False)
                 valid_values = values[complete]
                 diff = valid_values - subset_mu
                 squared = np.einsum("ij,jk,ik->i", diff, subset_prec, diff)
                 dist = np.sqrt(np.maximum(0.0, squared))
-
-                scores.loc[valid_idx] = np.round(dist, 4)
-                available.loc[valid_idx] = True
+                finite_dist = np.isfinite(dist)
+                valid_index = df.index[valid_idx]
+                scores.loc[valid_index[finite_dist]] = np.round(dist[finite_dist], 4)
+                available.loc[valid_index[finite_dist]] = True
 
         return scores, available
 
-    def _euclidean_fallback(
-        self,
-        df: pd.DataFrame,
-        feature_indices: List[int],
-        variant_name: str,
-    ) -> Tuple[pd.Series, pd.Series]:
-        """Fallback: Euclidean norm of z-scored features."""
-        z_prefix = "z_"
-        z_cols = [f"{z_prefix}{FEATURE_COLS[i]}" for i in feature_indices]
-        available_cols = [c for c in z_cols if c in df.columns]
-        if not available_cols:
-            return (
-                pd.Series(np.nan, index=df.index, dtype=float),
-                pd.Series(False, index=df.index, dtype=bool),
-            )
-        values = df[available_cols].apply(pd.to_numeric, errors="coerce")
-        complete = values.notna().all(axis=1)
-        calibration = df.get(
-            "is_calibration_phase", pd.Series(False, index=df.index)
-        ).fillna(False).astype(bool)
-        complete = complete & ~calibration
-
-        scores = pd.Series(np.nan, index=df.index, dtype=float)
-        scores.loc[complete] = np.sqrt((values.loc[complete] ** 2).sum(axis=1))
-        return scores, complete
-
-    def run_feature_ablations(self) -> Tuple[pd.DataFrame, AblationManifest]:
+    def run_feature_ablations(
+        self, frozen_threshold: Optional[float] = None,
+        expected_metrics: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[pd.DataFrame, AblationManifest]:
         """Run the corrected feature ablation experiment.
 
         Every variant's anomaly score goes through CUSUM, with threshold
@@ -320,9 +280,11 @@ class AblationRunner:
         working = self.df.copy()
         cfg = self.config
         results_rows = []
+        if self.baseline_store is None:
+            raise ValueError("Feature ablations require the historical baseline store")
 
         # --- Full-feature reference: reuse persisted cusum_stat ---
-        full_score_col = "cusum_stat"
+        full_score_col = "score_proposed_cusum" if "score_proposed_cusum" in working else "cusum_stat"
         full_cusum_col = full_score_col  # Already CUSUM output
         variant_name = "Full Micro-Mechanics Suite"
 
@@ -333,10 +295,9 @@ class AblationRunner:
             )
 
         # Verify production score availability
-        if "score_available" in working.columns:
-            working[f"_ablation_avail_{full_cusum_col}"] = working["score_available"].fillna(False)
-        else:
-            working[f"_ablation_avail_{full_cusum_col}"] = working[full_cusum_col].notna()
+        working[f"_ablation_avail_{full_cusum_col}"] = pd.Series(
+            np.isfinite(pd.to_numeric(working[full_cusum_col], errors="coerce")), index=working.index,
+        )
 
         full_threshold, full_val_metrics = select_operating_threshold(
             working, self.episodes, full_cusum_col,
@@ -344,14 +305,20 @@ class AblationRunner:
             horizon_pitches=cfg.horizon_pitches,
             split="validation",
         )
+        if frozen_threshold is not None:
+            if not ((pd.isna(full_threshold) and pd.isna(frozen_threshold)) or
+                    np.isclose(full_threshold, frozen_threshold, rtol=0.0, atol=1e-12)):
+                raise ValueError("Full-feature validation threshold differs from the frozen primary threshold")
+            full_threshold = frozen_threshold
         full_predictions = working[full_cusum_col].ge(full_threshold) & working[full_cusum_col].notna()
         full_test_metrics, _, _ = evaluate_warning_predictions(
             working, self.episodes, full_predictions,
             horizon_pitches=cfg.horizon_pitches, split="test",
+            availability=working[f"_ablation_avail_{full_cusum_col}"],
         )
 
         # PR-AUC on test set
-        test_mask = eligible_pitch_mask(working, "test")
+        test_mask = evaluation_opportunity_mask(working, "test")
         part = working.loc[test_mask, [full_cusum_col, "y_true_onset_in_horizon"]].dropna()
         if not part.empty and part["y_true_onset_in_horizon"].nunique() > 1:
             precision_arr, recall_arr, _ = precision_recall_curve(
@@ -373,7 +340,7 @@ class AblationRunner:
             "Feature Subset": variant_name,
             "Score Method": "mahalanobis_calibrated → CUSUM (production reuse)",
             "Validation-Selected Threshold": (
-                round(full_threshold, 4) if np.isfinite(full_threshold) else np.nan
+                full_threshold if np.isfinite(full_threshold) else np.nan
             ),
             "Validation Recall": round(full_val_metrics.get("episode_recall", 0.0), 4),
             "Validation Precision": round(full_val_metrics.get("warning_precision", 0.0), 4),
@@ -381,9 +348,10 @@ class AblationRunner:
                 full_val_metrics.get("false_warnings_per_outing", 0.0), 4
             ),
             "Allowed Max FW/Outing": cfg.false_warnings_per_outing,
-            "Test Episode Recall": round(full_test_metrics["episode_recall"], 4),
-            "Test Warning Precision": round(full_test_metrics["warning_precision"], 4),
-            "Test False Warnings / Outing": round(full_test_metrics["false_warnings_per_outing"], 4),
+            "Test Episode Recall": full_test_metrics["episode_recall"],
+            "Test Warning Precision": full_test_metrics["warning_precision"],
+            "Test False Warnings / Outing": full_test_metrics["false_warnings_per_outing"],
+            "Test Qualified Outings": full_test_metrics["total_qualified_outings"],
             "Test Pitch PR-AUC": round(full_pr_auc, 4) if np.isfinite(full_pr_auc) else np.nan,
             "Test Evaluated Outings": full_test_metrics["evaluated_outings_count"],
             "Test Evaluated Episodes": full_test_metrics["total_collapse_episodes"],
@@ -391,6 +359,7 @@ class AblationRunner:
             "Test False Warnings": full_test_metrics["false_warnings"],
             "Test Pitch Coverage": round(full_pitch_coverage, 4),
             "Test Outing Coverage": round(full_outing_coverage, 4),
+            "status": "pending_verification",
             "Actual Data Source": working.get(
                 "actual_data_source", pd.Series(["unknown"])
             ).dropna().iloc[0] if "actual_data_source" in working else "unknown",
@@ -418,16 +387,10 @@ class AblationRunner:
             cusum_col = f"_ablation_cusum_{group_name}"
 
             # Compute subset anomaly score
-            if self.baseline_store is not None:
-                scores, avail = self._compute_subset_mahalanobis(
-                    working, feature_indices, group_name,
-                )
-                distance_method = "subset_mahalanobis"
-            else:
-                scores, avail = self._euclidean_fallback(
-                    working, feature_indices, group_name,
-                )
-                distance_method = "euclidean_zscore (no baseline store)"
+            scores, avail = self._compute_subset_mahalanobis(
+                working, feature_indices,
+            )
+            distance_method = "subset_mahalanobis"
 
             working[score_col] = scores
             working[f"_ablation_avail_{score_col}"] = avail
@@ -460,6 +423,7 @@ class AblationRunner:
             test_metrics, _, _ = evaluate_warning_predictions(
                 working, self.episodes, predictions,
                 horizon_pitches=cfg.horizon_pitches, split="test",
+                availability=working[f"_ablation_avail_{cusum_col}"],
             )
 
             # PR-AUC on test
@@ -473,7 +437,7 @@ class AblationRunner:
                 pr_auc = np.nan
 
             # Coverage
-            subset_avail = working.loc[test_mask, f"_ablation_avail_{score_col}"]
+            subset_avail = working.loc[test_mask, f"_ablation_avail_{cusum_col}"]
             pitch_cov = float(subset_avail.sum() / len(test_pitches)) if len(test_pitches) else 0.0
             scored_out = test_pitches.loc[subset_avail, ["game_pk", "pitcher"]].drop_duplicates()
             outing_cov = float(len(scored_out) / len(full_outing_keys)) if len(full_outing_keys) else 0.0
@@ -495,11 +459,13 @@ class AblationRunner:
                 "Test False Warnings / Outing": round(test_metrics["false_warnings_per_outing"], 4),
                 "Test Pitch PR-AUC": round(pr_auc, 4) if np.isfinite(pr_auc) else np.nan,
                 "Test Evaluated Outings": test_metrics["evaluated_outings_count"],
+                "Test Qualified Outings": test_metrics["total_qualified_outings"],
                 "Test Evaluated Episodes": test_metrics["total_collapse_episodes"],
                 "Test Warnings": test_metrics["total_warnings"],
                 "Test False Warnings": test_metrics["false_warnings"],
                 "Test Pitch Coverage": round(pitch_cov, 4),
                 "Test Outing Coverage": round(outing_cov, 4),
+                "status": "computed",
                 "Actual Data Source": working.get(
                     "actual_data_source", pd.Series(["unknown"])
                 ).dropna().iloc[0] if "actual_data_source" in working else "unknown",
@@ -521,6 +487,9 @@ class AblationRunner:
             }
 
         result = pd.DataFrame(results_rows)
+        if expected_metrics is not None:
+            verify_full_feature_parity(result, expected_metrics)
+            result.loc[result["Feature Subset"].eq(variant_name), "status"] = "verified"
         logger.info("\n=== CORRECTED FEATURE ABLATION RESULTS ===\n%s", result.to_string(index=False))
         return result, self.manifest
 

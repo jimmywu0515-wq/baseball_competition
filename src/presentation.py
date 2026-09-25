@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Dict
 
@@ -65,6 +66,15 @@ def validate_release_artifacts(output_dir: Path) -> Dict[str, Any]:
     """Check a staged release before it can replace a published output set."""
     output_dir = Path(output_dir)
     manifest = load_protocol_manifest(output_dir)
+    canonical_fields = {key: value for key, value in manifest["resolved_runtime"].items()
+                        if key not in {"source_control", "locations"}}
+    canonical = json.dumps(canonical_fields, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != manifest.get("protocol_sha256"):
+        raise ValueError("Protocol manifest hash does not match its resolved runtime")
+    ablation_manifest = json.loads((output_dir / "ablation_manifest.json").read_text(encoding="utf-8"))
+    if (ablation_manifest.get("parent_protocol_hash") != manifest["protocol_sha256"] or
+            ablation_manifest.get("run_id") != manifest["run_id"]):
+        raise ValueError("Ablation manifest belongs to a different run or protocol")
     metrics = json.loads((output_dir / "metrics_summary.json").read_text(encoding="utf-8"))
     comparison = pd.read_csv(output_dir / "model_comparison.csv")
     coverage = pd.read_csv(output_dir / "evaluation_coverage.csv")
@@ -91,6 +101,9 @@ def validate_release_artifacts(output_dir: Path) -> Dict[str, Any]:
         frame = pd.read_csv(case_index)
         if not {"run_id", "protocol_sha256"}.issubset(frame.columns):
             raise ValueError("Case-study index lacks release identity")
+        if not frame.empty and (set(frame["run_id"]) != {run_id} or
+                                set(frame["protocol_sha256"]) != {protocol}):
+            raise ValueError("Case-study index belongs to a different run or protocol")
     primary = coverage.loc[coverage["model_key"].eq("proposed")]
     if len(primary) != 1:
         raise ValueError("Coverage must contain one proposed-model row")

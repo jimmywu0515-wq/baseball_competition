@@ -18,14 +18,17 @@ class StorageManager:
     Manages data read/write across the 5 Medallion layers.
     Defaults to local DuckDB and Parquet files; easily configurable for GCP.
     """
-    def __init__(self, base_dir: Optional[str] = None, db_path: Optional[str] = None):
+    def __init__(self, base_dir: Optional[str] = None, db_path: Optional[str] = None,
+                 namespace: Optional[str] = None):
         if base_dir is None:
             # default to baseball_competition directory
             self.base_dir = Path(__file__).resolve().parent.parent.parent
         else:
             self.base_dir = Path(base_dir)
 
-        self.data_dir = self.base_dir / "data"
+        if namespace is not None and (not namespace.isidentifier() or namespace == "real"):
+            raise ValueError("Storage namespace must be a simple non-real identifier")
+        self.data_dir = self.base_dir / "data" / namespace if namespace else self.base_dir / "data"
         self.raw_dir = self.data_dir / "raw"
         self.silver_dir = self.data_dir / "silver"
         self.gold_dir = self.data_dir / "gold"

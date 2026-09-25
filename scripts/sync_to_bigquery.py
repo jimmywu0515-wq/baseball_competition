@@ -25,8 +25,7 @@ def sync_all_tables_to_bigquery():
     try:
         from google.cloud import bigquery
     except ImportError:
-        logger.error("google-cloud-bigquery is not installed. Run: pip install google-cloud-bigquery")
-        return
+        raise RuntimeError("google-cloud-bigquery is not installed")
 
     client = bigquery.Client(project=PROJECT_ID)
     sm = StorageManager(base_dir=str(project_root))
@@ -46,27 +45,33 @@ def sync_all_tables_to_bigquery():
 
     logger.info(f"Starting sync of 10 Medallion Lakehouse tables to BigQuery `{PROJECT_ID}.{DATASET}`...")
 
-    for table_name, layer in tables_to_sync:
-        df = sm.load_table(table_name, layer=layer)
-        if df.empty:
-            logger.warning(f"Table {table_name} is empty locally. Skipping.")
-            continue
+    failures = []
+    try:
+        for table_name, layer in tables_to_sync:
+            df = sm.load_table(table_name, layer=layer)
+            if df.empty:
+                failures.append(f"{table_name}: local table is empty")
+                continue
 
-        dest_table = f"{PROJECT_ID}.{DATASET}.{table_name}"
-        logger.info(f"Uploading {len(df)} rows to BigQuery table `{dest_table}`...")
+            dest_table = f"{PROJECT_ID}.{DATASET}.{table_name}"
+            logger.info(f"Uploading {len(df)} rows to BigQuery table `{dest_table}`...")
         
-        job_config = bigquery.LoadJobConfig(
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
-        )
+            job_config = bigquery.LoadJobConfig(
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+            )
         
-        try:
-            job = client.load_table_from_dataframe(df, dest_table, job_config=job_config)
-            job.result() # Wait for job to finish
-            logger.info(f" Successfully loaded `{table_name}` ({len(df)} rows).")
-        except Exception as e:
-            logger.error(f"Failed to load `{table_name}` to BigQuery: {e}")
+            try:
+                job = client.load_table_from_dataframe(df, dest_table, job_config=job_config)
+                job.result() # Wait for job to finish
+                logger.info(f"Successfully loaded `{table_name}` ({len(df)} rows).")
+            except Exception as exc:
+                failures.append(f"{table_name}: {exc}")
+    finally:
+        sm.close()
 
-    logger.info("BigQuery Sync Completed Successfully!")
+    if failures:
+        raise RuntimeError("BigQuery sync incomplete: " + "; ".join(failures))
+    logger.info("BigQuery sync completed successfully")
 
 if __name__ == "__main__":
     sync_all_tables_to_bigquery()

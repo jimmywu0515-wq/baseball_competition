@@ -41,7 +41,10 @@ class CaseStudyVisualizer:
                         outing_df: pd.DataFrame, 
                         case_type: str, 
                         title_note: str,
-                        save_name: str) -> str:
+                        save_name: str,
+                        warning_pitch: Optional[int] = None,
+                        episode_start: Optional[int] = None,
+                        episode_end: Optional[int] = None) -> str:
         """
         Plots a 4-panel diagnostic chart for an outing.
         case_type: 'True Positive (Early Warning)', 'False Positive (False Alarm)',
@@ -56,15 +59,9 @@ class CaseStudyVisualizer:
         fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True, gridspec_kw={'hspace': 0.25})
 
         pitch_nums = df["pitch_number_in_outing"].values
-        alert_col = "is_proposed_operating_alert" if "is_proposed_operating_alert" in df else "is_cusum_alert"
-        alert_mask = df.get(alert_col, pd.Series(False, index=df.index)).fillna(False).astype(bool)
-        if "score_available" in df:
-            alert_mask &= df["score_available"].fillna(False).astype(bool)
-        alert_pitches = df.loc[alert_mask, "pitch_number_in_outing"].values
-        collapse_pitches = df[df.get("is_collapse_event", False)]["pitch_number_in_outing"].values
-
-        first_alert = alert_pitches[0] if len(alert_pitches) > 0 else None
-        first_collapse = collapse_pitches[0] if len(collapse_pitches) > 0 else None
+        first_alert = warning_pitch
+        first_collapse = episode_start
+        collapse_end = episode_end if episode_end is not None else episode_start
 
         # -------------------------------------------------------------
         # Panel 1: Mechanics Stability Index (MSI) & Alert
@@ -75,8 +72,8 @@ class CaseStudyVisualizer:
             100.0 * np.exp(-self.msi_decay_alpha * df.get("mahalanobis_calibrated", 1.0)),
         ).values
         ax1.plot(pitch_nums, msi, color="#1e88e5", linewidth=2.5, label="Mechanics Stability Index (MSI 0-100)", zorder=3)
-        ax1.axhline(60, color="#fb8c00", linestyle="--", alpha=0.7, label="Caution Threshold (60)")
-        ax1.axhline(35, color="#e53935", linestyle="--", alpha=0.7, label="Danger Threshold (35)")
+        ax1.axhline(60, color="#fb8c00", linestyle="--", alpha=0.7, label="Display guide (60)")
+        ax1.axhline(35, color="#e53935", linestyle="--", alpha=0.7, label="Display guide (35)")
         ax1.axvspan(
             0, self.calibration_pitches, color="#b0bec5", alpha=0.2,
             label=f"Calibration Period (Pitches 1-{self.calibration_pitches})",
@@ -94,8 +91,8 @@ class CaseStudyVisualizer:
             if len(alert_position):
                 ax1.scatter([first_alert], [msi[alert_position[0]]], color="#d81b60", s=100, zorder=5)
 
-        if first_collapse:
-            ax1.axvspan(first_collapse, max(pitch_nums), color="#ef5350", alpha=0.15, label=f"Collapse Episode (Pitch #{first_collapse}+)")
+        if first_collapse is not None:
+            ax1.axvspan(first_collapse, collapse_end, color="#ef5350", alpha=0.15, label=f"Evaluated episode ({first_collapse}-{collapse_end})")
 
         ax1.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=9)
 
@@ -110,8 +107,8 @@ class CaseStudyVisualizer:
 
         if first_alert:
             ax2.axvline(first_alert, color="#d81b60", linestyle="--", linewidth=1.5)
-        if first_collapse:
-            ax2.axvspan(first_collapse, max(pitch_nums), color="#ef5350", alpha=0.15)
+        if first_collapse is not None:
+            ax2.axvspan(first_collapse, collapse_end, color="#ef5350", alpha=0.15)
         ax2.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=9)
 
         # -------------------------------------------------------------
@@ -140,8 +137,8 @@ class CaseStudyVisualizer:
                 lead = first_collapse - first_alert
                 ax3.text(first_alert + 1, ax3.get_ylim()[0] + 0.3, f"Lead Time: {lead} pitches earlier", color="#d81b60", fontweight="bold", fontsize=10)
 
-        if first_collapse:
-            ax3.axvspan(first_collapse, max(pitch_nums), color="#ef5350", alpha=0.15)
+        if first_collapse is not None:
+            ax3.axvspan(first_collapse, collapse_end, color="#ef5350", alpha=0.15)
         ax3.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=9)
 
         # -------------------------------------------------------------
@@ -164,8 +161,8 @@ class CaseStudyVisualizer:
 
         if first_alert:
             ax4.axvline(first_alert, color="#d81b60", linestyle="--", linewidth=1.5)
-        if first_collapse:
-            ax4.axvspan(first_collapse, max(pitch_nums), color="#ef5350", alpha=0.15)
+        if first_collapse is not None:
+            ax4.axvspan(first_collapse, collapse_end, color="#ef5350", alpha=0.15)
         ax4.legend(loc="upper left", frameon=True, framealpha=0.9, fontsize=9)
 
         out_path = self.output_dir / save_name

@@ -147,6 +147,7 @@ class BaselineComparator:
         # Pass 1 uses validation only. These operating points are frozen before
         # any 2025 metric is calculated.
         curve_frames = []
+        curves_by_model = {}
         validation_by_model = {}
         for key, display_name, score_col, _ in model_specs:
             threshold, validation_metrics = select_operating_threshold(
@@ -168,6 +169,7 @@ class BaselineComparator:
                 curve["threshold"], threshold, equal_nan=False
             )
             curve_frames.append(curve)
+            curves_by_model[key] = curve
 
         if freeze_callback is not None:
             freeze_callback(dict(self.frozen_thresholds))
@@ -201,8 +203,8 @@ class BaselineComparator:
             if not matches.empty:
                 match_frames.append(matches.assign(model_key=key, model_name=display_name))
 
-            if curve_frames:
-                curve = curve_frames[[item["model_key"].iloc[0] for item in curve_frames].index(key)]
+            curve = curves_by_model[key]
+            if not curve.empty:
                 selected = curve["is_selected_operating_point"]
                 curve.loc[selected, "test_episode_recall_at_frozen_threshold"] = test_metrics["episode_recall"]
                 curve.loc[selected, "test_warning_precision_at_frozen_threshold"] = test_metrics["warning_precision"]

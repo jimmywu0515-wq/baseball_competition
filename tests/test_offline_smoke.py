@@ -1,14 +1,18 @@
 """Small, isolated synthetic run through the production pipeline."""
 from pathlib import Path
+import json
 import shutil
 import uuid
 
+import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from scripts.run_full_pipeline import run_pipeline
 from src.data_ingest.statcast_loader import StatcastLoader
 from src.presentation import validate_release_artifacts
+from src.anomaly_scorer.health_index import compute_mechanics_stability_index
 
 
 def test_synthetic_pipeline_release(monkeypatch):
@@ -32,6 +36,23 @@ def test_synthetic_pipeline_release(monkeypatch):
         assert manifest["actual_data_source"] == "simulation_benchmark"
         assert (published / "validation_report.md").exists()
         assert pd.read_csv(published / "evaluation_coverage.csv")["total_qualified_test_outings"].min() > 0
+        scored = pd.read_parquet(temp_root / "data" / "simulation" / "gold" /
+                                 "fact_pitch_anomaly_scores.parquet")
+        assert set(scored["run_id"]) == {manifest["run_id"]}
+        assert set(scored["protocol_sha256"]) == {manifest["protocol_sha256"]}
+        np.testing.assert_allclose(
+            scored["health_index"].to_numpy(),
+            compute_mechanics_stability_index(
+                scored["mahalanobis_calibrated"].to_numpy(),
+                decay_alpha=config["anomaly"]["health_index_decay_alpha"],
+            ), equal_nan=True,
+        )
+        ablation_path = published / "ablation_manifest.json"
+        ablation = json.loads(ablation_path.read_text(encoding="utf-8"))
+        ablation["parent_protocol_hash"] = "stale"
+        ablation_path.write_text(json.dumps(ablation), encoding="utf-8")
+        with pytest.raises(ValueError, match="Ablation manifest"):
+            validate_release_artifacts(published)
     finally:
         try:
             shutil.rmtree(temp_root)

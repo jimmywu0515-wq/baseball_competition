@@ -25,6 +25,7 @@ from src.presentation import (
     load_protocol_manifest,
     selected_model_settings,
     validate_operating_threshold_artifacts,
+    validate_release_artifacts,
 )
 
 st.set_page_config(
@@ -66,16 +67,27 @@ st.markdown("""
 
 
 @st.cache_data
-def load_data():
+def load_data(run_id: str):
+    manifest = validate_release_artifacts(app_root / "outputs" / "real_data")
+    if manifest["run_id"] != run_id:
+        raise ValueError("The published release changed while loading")
     sm = StorageManager(base_dir=str(app_root))
-    scored_df = sm.load_table("fact_pitch_anomaly_scores", layer="gold")
+    try:
+        scored_df = sm.load_table("fact_pitch_anomaly_scores", layer="gold")
+        labels_df = sm.load_table("fact_collapse_labels", layer="gold")
+        alerts_df = sm.load_table("fact_alert_events", layer="gold")
+        comp_df = sm.load_table("mart_model_evaluation", layer="gold")
+    finally:
+        sm.close()
     if scored_df.empty:
         raise RuntimeError("No published score table; run the canonical pipeline first")
-
-    labels_df = sm.load_table("fact_collapse_labels", layer="gold")
-    alerts_df = sm.load_table("fact_alert_events", layer="gold")
-    comp_df = sm.load_table("mart_model_evaluation", layer="gold")
-    manifest = load_protocol_manifest(app_root / "outputs" / "real_data")
+    for name, frame in (("scores", scored_df), ("labels", labels_df),
+                        ("alerts", alerts_df), ("comparison", comp_df)):
+        if not {"run_id", "protocol_sha256"}.issubset(frame.columns):
+            raise ValueError(f"Warehouse {name} lacks release identity")
+        if not frame.empty and (set(frame["run_id"]) != {run_id} or
+                                set(frame["protocol_sha256"]) != {manifest["protocol_sha256"]}):
+            raise ValueError(f"Warehouse {name} belongs to a different release")
     validate_operating_threshold_artifacts(manifest, comp_df)
     return scored_df, labels_df, alerts_df, comp_df, manifest
 
@@ -84,7 +96,8 @@ st.sidebar.title("⚾ 投手機制穩定度監控系統")
 st.sidebar.caption("Mechanics Stability Index (MSI) — 基於微觀物理特徵漂移之預警系統")
 
 try:
-    scored_df, labels_df, alerts_df, comp_df, run_manifest = load_data()
+    published_manifest = load_protocol_manifest(app_root / "outputs" / "real_data")
+    scored_df, labels_df, alerts_df, comp_df, run_manifest = load_data(published_manifest["run_id"])
 except (FileNotFoundError, ValueError, RuntimeError) as exc:
     st.error(f"Published evaluation is unavailable: {exc}")
     st.stop()
@@ -173,21 +186,14 @@ score_status = str(curr_pitch.get("score_status", "AVAILABLE" if score_available
 if not score_available:
     st.info(f"Score unavailable for this pitch: `{score_status}`. No alert can be displayed or evaluated.")
 elif alert_in_current:
-    dominant_feature = curr_pitch.get("dominant_drift_feature", "Release Arm Slot")
-    st.markdown(f"""
-    <div class="alert-banner-red">
-        🚨 <b>機制漂移警報觸發 (MECHANICS DRIFT ALERT)</b><br>
-        於第 <b>{first_alert_pitch}</b> 球偵測到投球機制顯著偏離個人歷史常態！主導漂移特徵：<code>{dominant_feature}</code>。<br>
-        ⚠️ 建議牛棚熱身並密切關注，預防後續可能之近程崩盤失分。
-    </div>
-    """, unsafe_allow_html=True)
+    dominant_feature = curr_pitch.get("dominant_drift_feature", "Unknown")
+    st.warning(
+        f"Retrospective mechanics drift alert at pitch {first_alert_pitch}. "
+        f"Largest drift feature: {dominant_feature}. This is a research signal, "
+        "not a validated coaching recommendation."
+    )
 else:
-    st.markdown("""
-    <div class="alert-banner-green">
-        ✅ <b>機制穩定 (MECHANICS STABLE)</b><br>
-        出手機制、自轉軸座標與進壘角均維持在個人歷史基準常態區間內。MSI 保持高位，未觸發 CUSUM 變點警報。
-    </div>
-    """, unsafe_allow_html=True)
+    st.info("No frozen-threshold mechanics alert in the selected replay window.")
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -253,8 +259,8 @@ with tab1:
             annotation_position="top left",
             annotation_font_size=10
         )
-        fig_ts.add_hline(y=60, line_dash="dash", line_color="#ffa726", annotation_text="Caution (MSI 60)")
-        fig_ts.add_hline(y=35, line_dash="dash", line_color="#ef5350", annotation_text="Critical (MSI 35)")
+        fig_ts.add_hline(y=60, line_dash="dash", line_color="#ffa726", annotation_text="Display guide (MSI 60)")
+        fig_ts.add_hline(y=35, line_dash="dash", line_color="#ef5350", annotation_text="Display guide (MSI 35)")
         if first_alert_pitch:
             fig_ts.add_vline(x=first_alert_pitch, line_color="#d81b60", line_width=2,
                              annotation_text=f"CUSUM Alert (#{first_alert_pitch})")
@@ -417,11 +423,9 @@ with tab3:
             "the achieved validation rate is reported separately."
         )
         st.info(
-            "**Scientific Review Note:** The mechanical warning system has not demonstrated "
-            "improved predictive performance over simple contextual or workload baselines. It detects "
-            "more episodes than the evaluated velocity-drop benchmark, with a higher false-warning burden. "
-            "Risk ratio confidence intervals include 1.0, proposed precision is lower than pitch count "
-            "(33.3% vs. 37.2%), and mechanical drift summaries remain unvalidated for live coaching decisions."
+            "These are retrospective results for the published run. Compare recall, precision, "
+            "false warnings, and uncertainty in the tables. Mechanical drift alone does not "
+            "establish fatigue or justify a live coaching decision."
         )
         st.dataframe(comp_df, use_container_width=True, hide_index=True)
 

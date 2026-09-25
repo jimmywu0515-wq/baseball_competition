@@ -1,6 +1,6 @@
 # MLB Pitcher Mechanics Stability Index
 
-**Evidence status:** `outputs/real_data/` contains validated schema version 2 run `08a3a0b1ccde4ff4a59b9a36690cd1a3`. Its full-feature ablation matches the primary model. Subset ablations are marked unavailable because historical subset covariance baselines were not retained.
+**Evidence status:** The saved `outputs/real_data/` run `08a3a0b1ccde4ff4a59b9a36690cd1a3` is archival evidence. Its ablation manifest belongs to a different protocol, so the current validator rejects it. A complete real-data rerun is required before using the dashboard or reporting a verified release.
 
 This project tests whether pitch-level mechanical drift is associated with a collapse episode in the next 15 pitches. The Mechanics Stability Index (MSI) is an inverse transform of Mahalanobis distance from a pitcher- and pitch-type-specific historical baseline. It is not a direct measure of fatigue, and this observational analysis does not establish causality.
 
@@ -69,9 +69,11 @@ The velocity benchmark calculates four-seamer (`FF`), sinker (`SI`), and cutter 
 
 An onset matches only a strictly earlier warning no more than the configured horizon before it; warning and episode matches are one-to-one. Episode recall uses all eligible observed episodes in qualified outings, including scoreless outings. Precision uses matched evaluable warnings divided by all evaluable warnings. False warnings per outing uses unmatched evaluable warnings divided by all qualified outings. Clean-outing false-alarm rate uses clean outings with an evaluable warning divided by all clean outings. Pitch coverage uses available scoring opportunities over all protocol opportunities; outing coverage uses outings with at least one available opportunity over all qualified outings. A missing denominator is N/A (JSON `null`), whereas an observed miss is zero. Risk ratios with an absent exposure group are undefined; positive alert risk over zero comparison risk is infinite. A selected no-alert threshold has status `no_alert` and a null numeric threshold.
 
-The configuration loader rejects obsolete aliases and validates parameter bounds. Manifest schema version 2 contains a run ID, deterministic protocol hash of resolved settings and thresholds, resolved runtime values, source commit, dirty state, and a source patch digest. Timestamps and machine paths are outside the protocol hash. Derived CSV artifacts carry both run and protocol IDs. Old manifest versions are rejected with a regeneration message. The output set is staged under `outputs/.staging/<run_id>` and validated before promotion; the warehouse batch and output-directory swap are separate operations, so a process failure between them can briefly leave different run IDs in those stores.
+The configuration loader rejects obsolete aliases and validates parameter bounds. Manifest schema version 2 contains a run ID, deterministic protocol hash of resolved settings, thresholds, and source/configuration digest, plus the source commit and dirty state. Timestamps and machine paths are outside the protocol hash. Derived CSV and gold warehouse artifacts carry both run and protocol IDs. Old manifest versions are rejected with a regeneration message. The output set is staged under `outputs/.staging/<run_id>` and validated before promotion; the warehouse batch and output-directory swap are separate operations, so a process failure between them can briefly leave different run IDs in those stores. The dashboard rejects mismatched identities. Simulation uses its own local warehouse under `data/simulation/`.
 
 Run the offline production smoke test with `python -m pytest tests/test_offline_smoke.py -q -p no:cacheprovider`. Validate a completed output directory with `python scripts/validate_artifacts.py outputs/real_data`. A complete real-data rerun uses `python scripts/run_full_pipeline.py`; it requires the approved 2023-2025 Statcast cache or retrieval access. No paid cloud job is needed for ordinary CI.
+
+The saved real-data directory predates these repairs and contains an ablation manifest from a different protocol. The current validator rejects it until a complete real-data rerun replaces the release. The `refresh_ablation_outputs.py` and `refresh_lead_time_outputs.py` entry points now run that full pipeline because isolated refreshes cannot safely mix artifact versions.
 
 ## Uncertainty and lead time
 
@@ -82,6 +84,8 @@ A pitcher-clustered sensitivity analysis resamples pitchers and includes all the
 The fixed-warning lead-time experiment holds scores, thresholds, and warning times constant while changing only the match horizon across 10, 15, 20, and 25 pitches. It reports follow-up coverage, censoring, a common-follow-up comparison, matched warning–episode records, and lead-time distributions. Improved recall under a wider window alone is not proof of earlier predictive value.
 
 ## Scientific interpretation and findings
+
+The findings below describe the earlier saved 2025 evaluation. Its published artifact set needs regeneration before it passes the current release validator.
 
 > **Central Conclusion:**
 > The mechanical warning system has not demonstrated improved predictive performance over simple contextual or workload baselines. It detects more episodes than the evaluated velocity-drop benchmark, with a higher false-warning burden. Mechanical drift summaries may support interpretation, but their additional value for coaching decisions remains unvalidated.
@@ -184,11 +188,11 @@ The verified 2025 comparison selected a proposed threshold of `211.9586` on 2024
 | :--- | :--- | :---: | :--- |
 | **1. Deterministic Cohort Selection** | `outputs/cohort_expansion/selection_pool.csv` | **Completed** | Pre-test selection seed `20250917`, >=30 MLB starts in 2023–2024, retaining original 6 pitchers. |
 | **2. Statcast Ingestion & Verification** | `outputs/cohort_expansion/ingestion_segments.csv` | **Completed** | 120 segments audited (115 loaded, 5 verified zero-pitch seasons via official MLB Stats API). |
-| **3. Resumable GCP Cloud Architecture** | `scripts/deploy_gcp.sh`, `scripts/cloud_entrypoint.py` | **Completed** | Dual-stage Cloud Run Jobs (`baseball-prepare` & `baseball-evaluate`) with GCS checkpointing & BigQuery publishing. |
+| **3. Resumable GCP Cloud Architecture** | `scripts/deploy_gcp.sh`, `scripts/cloud_entrypoint.py` | **Cloud verification pending** | Dual-stage Cloud Run Jobs and GCS checkpointing exist; publication still needs a release-wide consistency audit. |
 | **4. Vectorized Event-Matching Pipeline** | `src/evaluation/protocol.py`, `src/anomaly_scorer/` | **Completed** | Vectorized CUSUM/Mahalanobis scoring eliminating downstream evaluation bottlenecks. |
-| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` | **Validated run** | Run `08a3a0b1ccde4ff4a59b9a36690cd1a3` passed the release artifact validator. |
-| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Passed** | The current run passed the persisted warehouse audit. |
-| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Validated run** | Staged artifacts were validated and promoted together. |
+| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` | **Regeneration required** | The older run `08a3a0b1ccde4ff4a59b9a36690cd1a3` predates the stricter companion-manifest validation. |
+| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Archived check passed** | The older run passed its warehouse audit; the next real-data run must pass the current gate. |
+| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Regeneration required** | The current validator rejects the saved companion ablation manifest. |
 
 ---
 

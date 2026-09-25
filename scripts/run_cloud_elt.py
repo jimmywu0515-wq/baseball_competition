@@ -62,7 +62,7 @@ def run_cloud_elt(use_real_data: bool = True):
     metrics, _, _ = run_pipeline(use_real_data=use_real_data, base_dir=str(project_root))
     logger.info("Canonical run actual source: %s", metrics.get("actual_data_source"))
 
-    storage = StorageManager(base_dir=str(project_root))
+    storage = StorageManager(base_dir=str(project_root), namespace=None if use_real_data else "simulation")
     gcs = GCSLakeManager(bucket_name=BUCKET_NAME, project_id=PROJECT_ID, strict=True)
     tables = [
         ("raw_statcast_pitches", "raw"),
@@ -88,6 +88,7 @@ def run_cloud_elt(use_real_data: bool = True):
         ("audit_cohort_selection", "gold"),
         ("audit_ingestion_segments", "gold"),
         ("mart_pitcher_model_evaluation", "gold"),
+        ("mart_evaluation_coverage", "gold"),
         ("warehouse_integrity_report", "gold"),
     ]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
