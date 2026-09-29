@@ -1,5 +1,11 @@
 # Project review — 2026-09-24
 
+## Release update — 2026-09-29
+
+The repairs were pushed in commit `5092eed`. A complete local rerun using the cached 40-pitcher Statcast cohort produced real-data run `7f6d93243a7e47d3a78948198dce6f30` under protocol hash `bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a`. Both `scripts/validate_artifacts.py` and `scripts/audit_warehouse.py` pass. The full-feature ablation passed strict parity, and all three subset ablations were computed. The previous release remains in a local backup directory.
+
+The new proposed-model result is 154 detected episodes out of 1,581 (9.74% recall), 462 evaluable warnings (33.33% precision), and 308 false warnings across 708 test outings (0.435 per outing). These are locked retrospective results with prior 2025 exposure, not a pristine first look. The code has not been validated against cloud publication; release-wide warehouse/output atomicity, dependency locking, and a separately designed CUSUM calibration experiment remain open.
+
 ## Implementation update — 2026-09-25
 
 The findings below describe commit `231fe24` before repair. Current source changes restore the offline pipeline, model-specific evaluation masks, release coverage and identity, complete config/source provenance, strict ablation parity, safe refresh entry points, missing-measurement handling, separate simulation storage, and generated report/dashboard wording. Case plots now use evaluated warning and episode records. Regression tests and a GitHub Actions test workflow were added.

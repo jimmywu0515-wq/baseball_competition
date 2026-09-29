@@ -1,5 +1,5 @@
-case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,lead_time_pitches,run_id,protocol_sha256
-TP,776144,2025-09-28,663903,Brady Singer,mlb_statcast,65.0,66.0,1.0,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
-FP,776146,2025-09-27,607536,Kyle Freeland,mlb_statcast,62.0,,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
-FN,776145,2025-09-28,592332,Kevin Gausman,mlb_statcast,,4.0,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
-TN,776137,2025-09-28,657277,Logan Webb,mlb_statcast,,,,08a3a0b1ccde4ff4a59b9a36690cd1a3,43822a20a6ac13b4360f1a9c82cb8dad93de281e7cef8eb4dfef3a8fd1195b68
+case_type,game_pk,game_date,pitcher,pitcher_name,actual_data_source,warning_pitch,episode_onset_pitch,episode_end_pitch,lead_time_pitches,run_id,protocol_sha256
+TP,776144,2025-09-28,663903,Brady Singer,mlb_statcast,65.0,66.0,71.0,1.0,7f6d93243a7e47d3a78948198dce6f30,bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a
+FP,776146,2025-09-27,607536,Kyle Freeland,mlb_statcast,62.0,,,,7f6d93243a7e47d3a78948198dce6f30,bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a
+FN,776145,2025-09-28,592332,Kevin Gausman,mlb_statcast,,4.0,11.0,,7f6d93243a7e47d3a78948198dce6f30,bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a
+TN,776137,2025-09-28,657277,Logan Webb,mlb_statcast,,,,,7f6d93243a7e47d3a78948198dce6f30,bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a

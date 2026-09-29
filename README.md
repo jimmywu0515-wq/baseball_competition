@@ -1,6 +1,6 @@
 # MLB Pitcher Mechanics Stability Index
 
-**Evidence status:** The saved `outputs/real_data/` run `08a3a0b1ccde4ff4a59b9a36690cd1a3` is archival evidence. Its ablation manifest belongs to a different protocol, so the current validator rejects it. A complete real-data rerun is required before using the dashboard or reporting a verified release.
+**Evidence status:** `outputs/real_data/` contains validated run `7f6d93243a7e47d3a78948198dce6f30` (protocol `bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a`). The 40-pitcher rerun passed the artifact validator and persisted warehouse audit. The earlier run `08a3a0b1ccde4ff4a59b9a36690cd1a3` is archived locally because its ablation manifest belonged to a different protocol.
 
 This project tests whether pitch-level mechanical drift is associated with a collapse episode in the next 15 pitches. The Mechanics Stability Index (MSI) is an inverse transform of Mahalanobis distance from a pitcher- and pitch-type-specific historical baseline. It is not a direct measure of fatigue, and this observational analysis does not establish causality.
 
@@ -73,7 +73,7 @@ The configuration loader rejects obsolete aliases and validates parameter bounds
 
 Run the offline production smoke test with `python -m pytest tests/test_offline_smoke.py -q -p no:cacheprovider`. Validate a completed output directory with `python scripts/validate_artifacts.py outputs/real_data`. A complete real-data rerun uses `python scripts/run_full_pipeline.py`; it requires the approved 2023-2025 Statcast cache or retrieval access. No paid cloud job is needed for ordinary CI.
 
-The saved real-data directory predates these repairs and contains an ablation manifest from a different protocol. The current validator rejects it until a complete real-data rerun replaces the release. The `refresh_ablation_outputs.py` and `refresh_lead_time_outputs.py` entry points now run that full pipeline because isolated refreshes cannot safely mix artifact versions.
+The `refresh_ablation_outputs.py` and `refresh_lead_time_outputs.py` entry points run the full pipeline because isolated refreshes cannot safely mix artifact versions. The local DuckDB and Parquet warehouse is not included in Git; a fresh clone must run the pipeline before using the dashboard.
 
 ## Uncertainty and lead time
 
@@ -85,20 +85,11 @@ The fixed-warning lead-time experiment holds scores, thresholds, and warning tim
 
 ## Scientific interpretation and findings
 
-The findings below describe the earlier saved 2025 evaluation. Its published artifact set needs regeneration before it passes the current release validator.
+The validated 2025 retrospective test contains 708 qualified outings and 1,581 evaluable collapse episodes. The proposed model detected 154 episodes (9.74% recall), made 462 evaluable warnings (33.33% precision), and produced 308 unmatched warnings (0.435 per outing). The full-feature ablation reproduces these numbers under the same frozen threshold.
 
-> **Central Conclusion:**
-> The mechanical warning system has not demonstrated improved predictive performance over simple contextual or workload baselines. It detects more episodes than the evaluated velocity-drop benchmark, with a higher false-warning burden. Mechanical drift summaries may support interpretation, but their additional value for coaching decisions remains unvalidated.
+The proposed-minus-contextual confidence intervals for recall and precision include zero. Compared with traditional pitch count, the proposed model has lower recall by 0.01455; the outing-bootstrap 95% interval is [-0.02886, -0.00128], while the pitcher-clustered interval is [-0.03080, 0.00123]. The interpretation therefore depends on the resampling unit. The proposed risk-ratio estimate is 1.050, with intervals that include 1.0. See `bootstrap_confidence_intervals.csv` and `model_comparison.csv` for the complete comparisons and undefined-denominator frequencies.
 
-Key statistical findings:
-1. **Risk ratio confidence intervals include 1.0:** The evaluation does not establish an increased collapse risk following an alert.
-2. **Contextual comparison:** Proposed-minus-contextual intervals include 0 across primary comparisons; the evaluation has not demonstrated predictive superiority over pitch count + TTO + inning. Failing to reject the null is not proof of equivalence.
-3. **Recall vs. pitch count:** Proposed recall is lower than pitch-count recall. In the expanded evaluation, the outing-bootstrap difference estimate is -0.01518 (95% CI: [-0.02898, -0.00192]), whereas the pitcher-clustered interval is [-0.03188, +0.0000136]. Because the pitcher-clustered interval crosses zero, statistical significance depends on the clustering assumption.
-4. **Precision vs. pitch count:** Proposed warning precision (33.3%) is numerically lower than pitch count precision (37.2%).
-5. **Velocity benchmark comparison:** The proposed system detects more episodes than velocity drop, but with more false warnings. In the expanded cohort, velocity produced only one test warning; ~38.9% of outing-bootstrap replicates have undefined velocity precision due to a zero denominator (and 100% in sparse holdouts). This is not an unqualified superiority result.
-6. **Velocity scoring availability:** The ~50% velocity scoring availability reflects pitch-level scoring availability (restricted to fastball types), not an alert rate, and does not mean half the outings lack velocity scores (outing coverage is 100%).
-7. **Cohort and methodology shifts:** Discrepancies between earlier exploratory findings and the frozen evaluation cannot be attributed specifically to small-sample luck; both cohort composition and evaluation methodology changed.
-8. **Mechanical summaries vs. fatigue:** Mechanical feature summaries describe kinematic delivery deviations, but their actionable coaching value remains unvalidated. They do not establish why a collapse occurred, cannot diagnose biological fatigue or tissue stress, and do not demonstrate causal mechanisms.
+These results do not demonstrate additional predictive utility over simple contextual or workload baselines. Mechanical deviations do not establish biological fatigue, injury risk, or a causal mechanism. Exploratory 2025 results were examined before this revised protocol, so this is a locked retrospective holdout analysis rather than a pristine first look.
 
 ## Provenance and warehouse integrity
 
@@ -190,9 +181,9 @@ The verified 2025 comparison selected a proposed threshold of `211.9586` on 2024
 | **2. Statcast Ingestion & Verification** | `outputs/cohort_expansion/ingestion_segments.csv` | **Completed** | 120 segments audited (115 loaded, 5 verified zero-pitch seasons via official MLB Stats API). |
 | **3. Resumable GCP Cloud Architecture** | `scripts/deploy_gcp.sh`, `scripts/cloud_entrypoint.py` | **Cloud verification pending** | Dual-stage Cloud Run Jobs and GCS checkpointing exist; publication still needs a release-wide consistency audit. |
 | **4. Vectorized Event-Matching Pipeline** | `src/evaluation/protocol.py`, `src/anomaly_scorer/` | **Completed** | Vectorized CUSUM/Mahalanobis scoring eliminating downstream evaluation bottlenecks. |
-| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` | **Regeneration required** | The older run `08a3a0b1ccde4ff4a59b9a36690cd1a3` predates the stricter companion-manifest validation. |
-| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Archived check passed** | The older run passed its warehouse audit; the next real-data run must pass the current gate. |
-| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Regeneration required** | The current validator rejects the saved companion ablation manifest. |
+| **5. Full 40-Pitcher Pipeline Execution** | `scripts/run_full_pipeline.py` | **Completed** | Run `7f6d93243a7e47d3a78948198dce6f30` passed the current artifact validator. |
+| **6. Warehouse Audit & Integrity Gate** | `outputs/real_data/warehouse_integrity_report.csv` | **Passed** | The persisted warehouse audit found zero duplicate pitch keys and zero qualified orphans. |
+| **7. Production Metrics Promotion** | `outputs/real_data/metrics_summary.json` | **Completed** | Staged artifacts were validated before the real-data directory was promoted. |
 
 ---
 
