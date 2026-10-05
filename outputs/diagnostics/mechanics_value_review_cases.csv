@@ -1,0 +1,24 @@
+game_pk,pitcher,episode_id,onset_pitch,end_pitch,onset_pa,end_pa,game_date,dataset_split,actual_data_source,label_confirmed_pitch,onset_pa_event,window_blended_xwoba,collapse_reason,onset_pa_blended_xwoba,xwoba_source,onset_window_pas,duration_pitches,duration_pas,recognition_delay_pitches,pre_onset_pas_in_window,onset_during_calibration,protocol_warning_opportunities,mechanics_warning_opportunities,case_id,review_assessment
+716795,650633,1,31,44,6,9,2023-08-29,train,mlb_statcast,34,field_out,0.465,xwOBA,0.73,persisted_estimated_woba_value,3,14,4,3,2,False,10,0,1,pending baseball review
+717675,656302,2,49,68,13,17,2023-06-20,train,mlb_statcast,51,home_run,0.629,xwOBA,1.8858333333333333,persisted_estimated_woba_value,3,20,5,2,2,False,15,15,2,pending baseball review
+718761,519242,1,8,32,3,9,2023-04-01,train,mlb_statcast,10,home_run,0.858,xwOBA,1.8400571428571428,persisted_estimated_woba_value,3,25,7,2,2,True,0,0,3,pending baseball review
+718752,554430,1,4,17,3,5,2023-04-01,train,mlb_statcast,10,single,0.499,xwOBA,0.874,persisted_estimated_woba_value,3,14,3,6,2,True,0,0,4,pending baseball review
+717208,650911,1,43,46,9,9,2023-07-30,train,mlb_statcast,46,hit_by_pitch,0.524,xwOBA+BB/HBP,0.726005,persisted_estimated_woba_value,3,4,1,3,2,False,15,15,5,pending baseball review
+716431,650633,1,45,54,11,12,2023-09-26,train,mlb_statcast,48,walk,0.486,xwOBA+BB/HBP,0.695903,persisted_estimated_woba_value,3,10,2,3,2,False,15,15,6,pending baseball review
+718356,641482,1,9,29,3,6,2023-04-30,train,mlb_statcast,13,walk,0.472,xwOBA+BB/HBP,0.695903,persisted_estimated_woba_value,3,21,4,4,2,True,0,0,7,pending baseball review
+718519,675911,1,19,23,5,5,2023-04-18,train,mlb_statcast,23,walk,0.464,xwOBA+BB/HBP,0.695903,persisted_estimated_woba_value,3,5,1,4,2,True,0,0,8,pending baseball review
+716853,663903,2,31,43,9,10,2023-08-25,train,mlb_statcast,39,field_out,0.603,xwOBA+barrels,0.7702173913043479,persisted_estimated_woba_value,3,13,2,8,2,False,10,10,9,pending baseball review
+717305,641540,2,54,71,11,14,2023-07-22,train,mlb_statcast,58,home_run,0.923,xwOBA+barrels,1.896153846153846,persisted_estimated_woba_value,3,18,4,4,2,False,15,13,10,pending baseball review
+717426,605400,1,9,19,4,6,2023-07-09,train,mlb_statcast,9,home_run,0.97,xwOBA+barrels,2.0,persisted_estimated_woba_value,3,11,3,0,2,True,0,0,11,pending baseball review
+745785,622663,3,98,98,29,29,2024-08-17,validation,mlb_statcast,98,hit_by_pitch,0.459,xwOBA,0.720192,persisted_estimated_woba_value,3,1,1,0,2,False,15,15,12,pending baseball review
+745479,622663,2,32,35,11,11,2024-07-05,validation,mlb_statcast,35,single,0.658,xwOBA,0.833,persisted_estimated_woba_value,3,4,1,3,2,False,11,11,13,pending baseball review
+746175,605397,1,7,26,2,6,2024-03-21,validation,mlb_statcast,7,single,0.464,xwOBA,0.918,persisted_estimated_woba_value,2,20,5,0,1,True,0,0,14,pending baseball review
+746791,592332,1,7,12,3,4,2024-05-28,validation,mlb_statcast,11,walk,0.503,xwOBA,0.689131,persisted_estimated_woba_value,3,6,2,4,2,True,0,0,15,pending baseball review
+744916,543037,2,54,62,12,13,2024-06-30,validation,mlb_statcast,58,hit_by_pitch,0.472,xwOBA+BB/HBP,0.720192,persisted_estimated_woba_value,3,9,2,4,2,False,15,15,16,pending baseball review
+746227,663776,1,27,35,6,7,2024-05-24,validation,mlb_statcast,32,walk,0.459,xwOBA+BB/HBP,0.689131,persisted_estimated_woba_value,3,9,2,5,2,False,6,5,17,pending baseball review
+746651,671106,2,15,19,4,4,2024-04-20,validation,mlb_statcast,19,walk,0.46,xwOBA+BB/HBP,0.689131,persisted_estimated_woba_value,3,5,1,4,2,True,0,0,18,pending baseball review
+745759,650644,1,17,23,4,4,2024-04-21,validation,mlb_statcast,23,walk,0.459,xwOBA+BB/HBP,0.689131,persisted_estimated_woba_value,3,7,1,6,2,True,0,0,19,pending baseball review
+745313,592332,2,65,76,20,21,2024-07-11,validation,mlb_statcast,69,field_out,0.619,xwOBA+barrels,1.0830857142857149,persisted_estimated_woba_value,3,12,2,4,2,False,15,15,20,pending baseball review
+745413,605397,2,79,79,20,20,2024-05-26,validation,mlb_statcast,79,field_out,0.534,xwOBA+barrels,0.6513333333333333,persisted_estimated_woba_value,3,1,1,0,2,False,15,15,21,pending baseball review
+745543,650911,2,13,38,4,10,2024-07-31,validation,mlb_statcast,16,single,0.653,xwOBA+barrels,0.817,persisted_estimated_woba_value,3,26,7,3,2,True,0,0,22,pending baseball review
+745817,656849,2,9,23,4,6,2024-05-29,validation,mlb_statcast,12,home_run,0.8,xwOBA+barrels,1.4390624999999997,persisted_estimated_woba_value,3,15,3,3,2,True,0,0,23,pending baseball review

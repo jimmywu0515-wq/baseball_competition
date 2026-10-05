@@ -1,0 +1,49 @@
+{
+  "interpretation": "Existing performance-stretch labels; frequency alone neither validates nor invalidates a collapse interpretation.",
+  "onset_semantics": "Onset is backdated to the first pitch of the PA completing a bad rolling window; confirmation is at that PA's last pitch. Earlier PAs in the window precede onset.",
+  "opportunity_semantics": "Opportunity counts are structural availability diagnostics, not a one-to-one-matching recall ceiling. Original denominators are retained.",
+  "splits": {
+    "train": {
+      "qualified_outings": 935,
+      "outings_with_episode": 901,
+      "clean_outings": 34,
+      "fraction_outings_with_episode": 0.9636363636363636,
+      "episodes": 2215,
+      "episodes_per_outing": 2.3689839572192515,
+      "onsets_during_calibration": 554,
+      "no_protocol_warning_opportunity": 584,
+      "no_mechanics_warning_opportunity": 933,
+      "onsets_using_incomplete_pa_window": 258,
+      "median_duration_pas": 2.0,
+      "median_onset_pitch": 46.0,
+      "median_recognition_delay_pitches": 3.0,
+      "median_onset_window_xwoba": 0.536,
+      "reason_counts": {
+        "xwOBA": 2042,
+        "xwOBA+BB/HBP": 159,
+        "xwOBA+barrels": 14
+      }
+    },
+    "validation": {
+      "qualified_outings": 956,
+      "outings_with_episode": 909,
+      "clean_outings": 47,
+      "fraction_outings_with_episode": 0.950836820083682,
+      "episodes": 2152,
+      "episodes_per_outing": 2.2510460251046025,
+      "onsets_during_calibration": 524,
+      "no_protocol_warning_opportunity": 544,
+      "no_mechanics_warning_opportunity": 545,
+      "onsets_using_incomplete_pa_window": 255,
+      "median_duration_pas": 2.0,
+      "median_onset_pitch": 46.0,
+      "median_recognition_delay_pitches": 3.0,
+      "median_onset_window_xwoba": 0.531,
+      "reason_counts": {
+        "xwOBA": 1984,
+        "xwOBA+BB/HBP": 150,
+        "xwOBA+barrels": 18
+      }
+    }
+  }
+}

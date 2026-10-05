@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-01T20:52:06.801757+00:00",
+  "parent_run_id": "7f6d93243a7e47d3a78948198dce6f30",
+  "parent_protocol_sha256": "bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a",
+  "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
+  "development_exposure_disclosure": "Both halves of 2024 were used in earlier exploratory work. This chronological development comparison is not a new independent holdout.",
+  "training": "2023",
+  "threshold_selection": "2024-01-01 through 2024-06-30",
+  "assessment": "2024-07-01 through 2024-12-31",
+  "selection_end": "2024-06-30",
+  "test_rows_loaded": false,
+  "context_features": [
+    "pitch_number_in_outing",
+    "tto",
+    "inning"
+  ],
+  "additional_mechanics_features": [
+    "log_distance",
+    "recent_log_distance",
+    "distance_trend",
+    "velocity_z",
+    "release_z_magnitude"
+  ],
+  "classifier": {
+    "type": "logistic_regression",
+    "C": 1.0,
+    "class_weight": "balanced",
+    "random_state": 42
+  },
+  "score_interpretation": "Ranking scores, not calibrated probabilities",
+  "preprocessing": "Mechanics clipped at 2023 common-training-row 0.5/99.5 percentiles; StandardScaler fitted on those same train rows",
+  "availability_policy": "Both fitted models share training rows and finite mechanics scoring opportunities. The pitch-count comparator uses the same availability. All qualified outings and episodes remain in denominators.",
+  "false_warning_budgets": [
+    0.1,
+    0.25,
+    0.5
+  ],
+  "primary_budget": 0.5,
+  "threshold_candidates": "Union of 31 and 101 selection-score quantiles, plus no-alert infinity; recall/precision/false-warning tie-breaks match production",
+  "horizon_pitches": 15,
+  "calibration_pitches": 20,
+  "bootstrap": {
+    "samples": 1000,
+    "seed": 20261002,
+    "unit": "pitcher",
+    "thresholds_reselected": false
+  },
+  "label_policy": "Audit existing labels without revising them or removing early/unavailable episodes",
+  "label_review_sample": "Two episodes per original split, onset-reason combination, and calibration flag; seed 20261002; independent of model predictions",
+  "source_sha256": {
+    "scripts\\diagnostics\\run_mechanics_value_study.py": "fa99f30ab78dbe4ca9b1c822c943a139c6f527a3b5a0d9ecadff0117ccbe28ab",
+    "src\\evaluation\\mechanics_value.py": "59745c954d0f481afb57204162a9a2f4605be2bd3d0d85667931df7806e504df",
+    "scripts\\diagnostics\\check_cusum_pitch_count_correlation.py": "18eec08f7d458b00e66a06c462f6d57002ab8c6029bb13531f0fe2dd40f973c6",
+    "src\\evaluation\\protocol.py": "17792e7eabb231876b4531711915c201bf4ed13f8f7c0605d1d0f7f54d2189a9",
+    "src\\evaluation\\bootstrap.py": "50ff7ec03d341ab7ce234d6b2c09f2cb67c724d81d06742b96d3229178493278",
+    "src\\evaluation\\baseline_comparator.py": "be2eaddb48260447eb6927affc7c64dccfbf2d28078f8fa59c61a33110b3a392"
+  }
+}
