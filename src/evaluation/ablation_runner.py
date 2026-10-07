@@ -153,7 +153,7 @@ class AblationRunner:
         slack_k: float,
         threshold_h: float,
         reference_mean: float,
-        reference_std: float,
+        reference_std: float | dict | pd.Series,
         calibration_pitches: int,
     ) -> pd.DataFrame:
         """Run CUSUM on an anomaly score column, resetting between outings.
@@ -162,14 +162,17 @@ class AblationRunner:
         arbitrary score column and writes to a specified output column.
         Unavailable scores (NaN) do not update the CUSUM statistic.
         Calibration pitches (≤ calibration_pitches) are excluded.
-        Pitch gaps and outing boundaries reset the detector.
+        Detector state persists across unavailable positions; outings reset it.
         """
         result = df.copy()
         if not result.index.is_unique:
             raise ValueError("Ablation pitch-row index must be unique")
         cusum_vals = np.full(len(result), np.nan)
 
-        for _, outing in result.groupby(["game_pk", "pitcher"], sort=False):
+        from src.changepoint_detector.cusum_detector import resolve_reference_std
+
+        for (_, pitcher), outing in result.groupby(["game_pk", "pitcher"], sort=False):
+            resolved_std = resolve_reference_std(reference_std, int(pitcher))
             outing_sorted = outing.sort_values("pitch_number_in_outing")
             statistic = 0.0
             positions = result.index.get_indexer(outing_sorted.index)
@@ -183,7 +186,7 @@ class AblationRunner:
             ):
                 if not (pitch_number > calibration_pitches and score_avail and np.isfinite(score)):
                     continue
-                z = (score - reference_mean) / max(reference_std, 1e-6)
+                z = (score - reference_mean) / resolved_std
                 statistic = max(0.0, statistic + z - slack_k)
                 cusum_vals[position] = round(statistic, 3)
 

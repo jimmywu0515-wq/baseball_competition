@@ -21,6 +21,7 @@ outputs/.real_run_attempt.log
 *.json
 !outputs/metrics_summary.json
 !outputs/real_data/*.json
+!outputs/real_data/diagnostics/*.json
 !outputs/diagnostics/*.json
 !outputs/simulation/*.json
 !gcp_key.example.json
