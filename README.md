@@ -4,6 +4,42 @@
 
 This project tests whether pitch-level mechanical drift is associated with a collapse episode in the next 15 pitches. The Mechanics Stability Index (MSI) is an inverse transform of Mahalanobis distance from a pitcher- and pitch-type-specific historical baseline. It is not a direct measure of fatigue, and this observational analysis does not establish causality.
 
+## Two implemented methods: comparison and default choice
+
+Both the original global-scale CUSUM and the experimental pitcher-scale CUSUM are included in this repository. **The original method remains the default.** The experiment is retained so the comparison can be reproduced and future changes can build on its findings.
+
+| Method | How it works | Implementation and status |
+|---|---|---|
+| Original global-scale CUSUM | Uses pitcher- and pitch-type-specific mechanical baselines, then accumulates calibrated mechanical distance with a common CUSUM reference mean of 1.0 and standard deviation of 0.5. | [CUSUM detector](src/changepoint_detector/cusum_detector.py), [evaluation runner](src/evaluation/ablation_runner.py), and [default configuration](config/config.yaml). Used by the main pipeline. |
+| Experimental pitcher-scale CUSUM | Uses the same mechanical scores and reference mean, but multiplies the CUSUM reference standard deviation by a pitcher-specific scale fitted from 2023 only. Each scale is shrunk toward 1; insufficient training history uses an explicit scale-1 fallback. | [Scale fitter](src/baseline_builder/dispersion_shrinkage.py) and [comparison script](scripts/diagnostics/run_pitcher_scale_study.py). Available through the research script; it is not a production configuration mode. |
+
+The experimental scale is `scale_i = w_i * (pitcher_std_i / pooled_training_std) + (1 - w_i)`, where `w_i = n_i / (n_i + n0)`. The primary prior `n0` is the training median of 863 eligible pitches; half and double this prior are sensitivity checks. Parameters are frozen before application to 2024.
+
+### How we tested both methods
+
+Both methods use the same scores, score availability, episode definition, and one-to-one warning matcher. Training data are from 2023; each method selects its own operating threshold on January–June 2024 under the same allowance of at most 0.5 false warnings per outing. Thresholds are frozen before assessment on July–December 2024. All 446 assessment outings and 973 episodes remain in the denominators, with 27,900 available evaluation pitches for every candidate. Paired outing and pitcher bootstraps quantify uncertainty.
+
+This is a chronological **development comparison**: both halves of 2024 were previously explored. The experiment excludes 2025. Its numbers must not be compared directly with the separate published 2025 evaluation as if the populations were identical.
+
+### Results and why we retain the original default
+
+| Later-2024 assessment | Original global scale | Experimental pitcher scale, primary prior |
+|---|---:|---:|
+| Detected episodes / all episodes | 65 / 973 | 84 / 973 |
+| Episode recall | 6.68% | 8.63% |
+| Evaluable warnings | 185 | 264 |
+| Warning precision | 35.14% | 31.82% |
+| False warnings | 120 | 180 |
+| False warnings per outing | 0.269 | 0.404 |
+
+The experiment catches 19 additional episodes but produces 60 additional false warnings, a 50% increase. Its recall gain is 1.95 percentage points (paired pitcher-bootstrap 95% interval: +0.20 to +3.86), while false warnings increase by 0.135 per outing (+0.031 to +0.258). Precision decreases by 3.32 points; its interval includes zero (−10.83 to +3.80). Because the realized warning burdens differ, this does not establish better detection at an equal false-warning rate.
+
+The intended balance across pitchers also does not improve: the recall gap between low- and high-dispersion groups grows from 0.57 to 6.46 percentage points. These subgroup estimates are descriptive. Taken together, the results do not justify replacing the original default with the scale-only experiment. Keeping the original preserves the existing protocol and its lower warning burden in this comparison; it does **not** establish that the original is an optimal detector or that mechanics add predictive value over workload/context baselines.
+
+The proposed directional degradation score was screened separately. Positive-sign directions accounted for 60.00% of classifiable false-warning starts, versus 60.92% of the matched background. Only 10 warning starts were classifiable, and the diagnostic gate failed. Directional scoring therefore remains a proposal rather than a second implemented production method. The two implemented methods above compare global versus pitcher-specific CUSUM scale.
+
+See [the detailed diagnostics below](#gated-direction-and-dispersion-follow-up), [saved comparison counts](outputs/real_data/diagnostics/pitcher_scale_comparison.csv), and [full study report with uncertainty](outputs/real_data/diagnostics/pitcher_scale_study_report.json). Reproduce the comparison from the real-data warehouse with `python scripts/diagnostics/run_pitcher_scale_study.py`; the prerequisite diagnostics and data instructions are listed below.
+
 ## Frozen evaluation protocol
 
 Real-data runs retrieve regular-season (`game_type = R`) Statcast pitches for the configured cohort and seasons. The primary experiment is:
@@ -116,7 +152,7 @@ Adding the predefined mechanics features reduces recall by 4.93 percentage point
 
 ## Gated direction and dispersion follow-up
 
-The proposed directional-score and pitcher-dispersion changes are being assessed in a separate research PR. Its Phase 0 plan is saved at `outputs/real_data/diagnostics/directional_scale_plan.json` before diagnostic results are calculated. Signed calibrated deviations already exist as `calib_delta_*`; the diagnostic can reuse them without changing production scoring. Warning starts and one-to-one matches must use the authoritative evaluator and agree with the persisted alert table. Warnings on fully episode-free outings are reported separately from unmatched warnings on episode-containing outings.
+The completed research comparison screens the proposed directional score and tests pitcher-specific CUSUM dispersion scaling. Its Phase 0 plan was saved at `outputs/real_data/diagnostics/directional_scale_plan.json` before diagnostic results were calculated. Signed calibrated deviations already exist as `calib_delta_*`; the diagnostic reuses them without changing production scoring. Warning starts and one-to-one matches use the authoritative evaluator and agree with the persisted alert table. Warnings on fully episode-free outings are reported separately from unmatched warnings on episode-containing outings.
 
 The proposed positive-sign interpretations are hypotheses: greater spin is not universally desirable across pitch types ([MLB spin-rate glossary](https://www.mlb.com/glossary/statcast/spin-rate)). A sign in a whitened coordinate also cannot be interpreted directly as the sign of a raw physical feature. The existing CUSUM reference-location mismatch remains relevant when assessing a scale-only intervention. Decisions use training and validation data; test data are excluded from Phase 0. Production work proceeds only where the saved diagnostic gates and a reproducible development comparison support it.
 
