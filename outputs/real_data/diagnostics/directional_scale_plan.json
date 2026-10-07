@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-10-07T14:03:37.834488+00:00",
+  "run_id": "7f6d93243a7e47d3a78948198dce6f30",
+  "protocol_sha256": "bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a",
+  "attachment_sha256": "7d3c5a676c7fa1f1d81cf82977ae1deeab181bee9d82e85f1933823d98b5e82f",
+  "status": "diagnostic gates frozen before execution",
+  "data_splits_loaded": [
+    "train",
+    "validation"
+  ],
+  "test_rows_loaded": false,
+  "signed_deviations": "Reuse persisted, rounded calib_delta_*; zeros are neutral/rounding-ambiguous. No raw-feature quality direction is assumed.",
+  "warning_contract": "Frozen production operating threshold; authoritative warning builder, censoring, and one-to-one matcher; exact persisted-alert identity parity.",
+  "directional_primary_unit": "Evaluable unmatched warning STARTS on outings with zero labeled episodes. Flagged-run pitches are secondary and never counted as independent warnings.",
+  "directional_comparators": [
+    "all eligible validation pitches",
+    "all eligible pitches reweighted to warning-start pitcher, pitch type, dominant feature, and 10-pitch workload band"
+  ],
+  "hypothesized_positive_features": [
+    "release_speed",
+    "release_pos_z",
+    "release_extension",
+    "release_spin_rate"
+  ],
+  "directional_gate": {
+    "split": "validation",
+    "positive_sign_share_above": 0.5,
+    "minimum_matched_baseline_excess": 0.1,
+    "minimum_classifiable_warning_starts": 20,
+    "minimum_pitchers": 10,
+    "paired_pitcher_bootstrap_lower_excess_above": 0.0
+  },
+  "dispersion_primary_population": "Available post-calibration train scores with y_true_onset_in_horizon == False; this is non-pre-onset, not proof of physiological in-control state.",
+  "dispersion_strict_sensitivity": "Additionally exclude active episodes and right-censored follow-up.",
+  "dispersion_gate": {
+    "minimum_eligible_outings_per_pitcher": 5,
+    "minimum_pitches_per_pitcher": 30,
+    "minimum_max_to_min_std_ratio": 2.0,
+    "strict_sensitivity_must_also_pass": true
+  },
+  "uncertainty": {
+    "bootstrap_samples": 1000,
+    "seed": 20261007,
+    "directional_unit": "pitcher",
+    "dispersion_unit": "outing within pitcher"
+  },
+  "conditional_next_step": "Evaluate a fixed train-fitted scale candidate on development data if dispersion gate passes; production integration requires evidence of incremental benefit. Directional production scoring requires its confound gate first.",
+  "scientific_corrections": [
+    "Higher spin is pitch-type dependent; sign labels are hypotheses, not fatigue diagnoses.",
+    "A whitened-coordinate coefficient mixes original features; raw directional checks require mapping back through each whitening transform.",
+    "Global CUSUM reference mean is not calibrated by in-game feature-mean shrinkage.",
+    "Train-fitted parameters cannot be applied retrospectively to earlier train outings as causal scores.",
+    "Adding config/source changes necessarily creates a new protocol hash; numeric default parity is the valid guard, not byte-identical manifests."
+  ],
+  "prior_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
+  "reference_source": "https://www.mlb.com/glossary/statcast/spin-rate"
+}

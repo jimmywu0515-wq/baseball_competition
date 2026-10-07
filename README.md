@@ -116,6 +116,10 @@ Adding the predefined mechanics features reduces recall by 4.93 percentage point
 
 ## Uncertainty and lead time
 
+The proposed directional-score and pitcher-dispersion changes are being assessed in a separate research PR. Its Phase 0 plan is saved at `outputs/real_data/diagnostics/directional_scale_plan.json` before diagnostic results are calculated. Signed calibrated deviations already exist as `calib_delta_*`; the diagnostic can reuse them without changing production scoring. Warning starts and one-to-one matches must use the authoritative evaluator and agree with the persisted alert table. Warnings on fully episode-free outings are reported separately from unmatched warnings on episode-containing outings.
+
+The proposed positive-sign interpretations are hypotheses: greater spin is not universally desirable across pitch types ([MLB spin-rate glossary](https://www.mlb.com/glossary/statcast/spin-rate)). A sign in a whitened coordinate also cannot be interpreted directly as the sign of a raw physical feature. The existing CUSUM reference-location mismatch remains relevant when assessing a scale-only intervention. Decisions use training and validation data; test data are excluded from Phase 0. Production work proceeds only where the saved diagnostic gates and a reproducible development comparison support it.
+
 Paired bootstrap intervals resample the same complete qualified 2025 outings used by the headline evaluator and use identical sampled outings for every model. Frozen thresholds are never reselected within bootstrap samples. The output reports 95% intervals for episode recall, warning precision, false warnings per outing, risk ratio, and direct proposed-minus-comparator differences. Zero-denominator replicate frequency is reported explicitly, and bootstrap point estimates are tested against the ordinary evaluator before resampling.
 
 A pitcher-clustered sensitivity analysis resamples pitchers and includes all their outings. Per-pitcher results are exported so pooled performance can be checked for dependence on a few pitchers.
