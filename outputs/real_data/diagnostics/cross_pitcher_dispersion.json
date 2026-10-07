@@ -1,0 +1,79 @@
+{
+  "run_id": "7f6d93243a7e47d3a78948198dce6f30",
+  "protocol_sha256": "bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a",
+  "created_at_utc": "2026-10-07T14:11:59.585525+00:00",
+  "test_rows_loaded": false,
+  "parent_threshold": 211.35120000000006,
+  "plan_sha256": "ba60aa561acc2664bfc028bb99578d6016a308357213071b1ea9c18976a59046",
+  "source_sha256": {
+    "scripts\\diagnostics\\directional_scale_diagnostics.py": "ac4fff11ec72c66c60b5a8ee1ef3f3b68b03b75d8eb96937e7b2f392f680d4dd",
+    "src\\evaluation\\protocol.py": "17792e7eabb231876b4531711915c201bf4ed13f8f7c0605d1d0f7f54d2189a9",
+    "scripts\\diagnostics\\check_cusum_pitch_count_correlation.py": "f0f9309d4e9b13dc6afdaeeea07e233a61d549055a7685e5c15df9cd9395cc60"
+  },
+  "primary_non_pre_onset": {
+    "pitchers": 38,
+    "excluded_pitchers": 2,
+    "pitches": 34847,
+    "distribution": {
+      "mean": {
+        "min": 2.9106563122923585,
+        "max": 4.193938144329897,
+        "p25": 3.1431686168311774,
+        "median": 3.2548053031577293,
+        "p75": 3.351037079192258,
+        "iqr": 0.20786846236108047
+      },
+      "std": {
+        "min": 0.7976414060190314,
+        "max": 5.0578403515343275,
+        "p25": 1.0484205276023095,
+        "median": 1.2563975531587048,
+        "p75": 2.465714690098083,
+        "iqr": 1.4172941624957733
+      }
+    },
+    "max_to_min_std_ratio": 6.340995230899096,
+    "pooled_mean": 3.2375457399489194,
+    "pooled_std": 2.161770341702678,
+    "outing_bootstrap_ratio": {
+      "ci_lower_95": 5.471745085277082,
+      "ci_upper_95": 11.526403714695324,
+      "valid_replicates": 1000
+    },
+    "passes_ratio_gate": true
+  },
+  "strict_sensitivity": {
+    "pitchers": 38,
+    "excluded_pitchers": 2,
+    "pitches": 19238,
+    "distribution": {
+      "mean": {
+        "min": 2.9458621546961328,
+        "max": 4.270267153284672,
+        "p25": 3.083935679106158,
+        "median": 3.20410393102913,
+        "p75": 3.347953591839447,
+        "iqr": 0.26401791273328934
+      },
+      "std": {
+        "min": 0.7882104982267573,
+        "max": 6.2561119811713155,
+        "p25": 1.068596030663761,
+        "median": 1.2467047129580708,
+        "p75": 2.482081159454978,
+        "iqr": 1.4134851287912171
+      }
+    },
+    "max_to_min_std_ratio": 7.937108164945449,
+    "pooled_mean": 3.207849376234536,
+    "pooled_std": 2.1467132150591266,
+    "outing_bootstrap_ratio": {
+      "ci_lower_95": 4.903301820249352,
+      "ci_upper_95": 13.80547955840289,
+      "valid_replicates": 1000
+    },
+    "passes_ratio_gate": true
+  },
+  "proceed_to_scale_development_comparison": true,
+  "interpretation": "Training dispersion heterogeneity alone does not establish that scaling improves warnings. The original global reference mean remains a separate problem."
+}

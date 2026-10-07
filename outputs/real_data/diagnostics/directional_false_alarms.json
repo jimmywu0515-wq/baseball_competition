@@ -1,0 +1,224 @@
+{
+  "run_id": "7f6d93243a7e47d3a78948198dce6f30",
+  "protocol_sha256": "bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a",
+  "created_at_utc": "2026-10-07T14:11:59.612994+00:00",
+  "test_rows_loaded": false,
+  "parent_threshold": 211.35120000000006,
+  "plan_sha256": "ba60aa561acc2664bfc028bb99578d6016a308357213071b1ea9c18976a59046",
+  "source_sha256": {
+    "scripts\\diagnostics\\directional_scale_diagnostics.py": "ac4fff11ec72c66c60b5a8ee1ef3f3b68b03b75d8eb96937e7b2f392f680d4dd",
+    "src\\evaluation\\protocol.py": "17792e7eabb231876b4531711915c201bf4ed13f8f7c0605d1d0f7f54d2189a9",
+    "scripts\\diagnostics\\check_cusum_pitch_count_correlation.py": "f0f9309d4e9b13dc6afdaeeea07e233a61d549055a7685e5c15df9cd9395cc60"
+  },
+  "splits": {
+    "train": {
+      "production_metrics": {
+        "evaluated_outings_count": 935,
+        "evaluated_pitches_count": 45009,
+        "total_qualified_outings": 935,
+        "outings_with_available_score": 734,
+        "outings_without_available_score": 201,
+        "evaluation_opportunity_pitches": 58755,
+        "score_available_evaluation_pitches": 45009,
+        "pitch_level_scoring_coverage": 0.7660454429410263,
+        "outing_level_scoring_coverage": 0.7850267379679144,
+        "total_collapse_episodes": 2215,
+        "evaluated_episodes_count": 2215,
+        "collapse_episodes_detected": 183,
+        "episode_recall": 0.08261851015801354,
+        "warning_precision": 0.32105263157894737,
+        "master_warning_count": 807,
+        "censored_warnings": 237,
+        "total_warnings": 570,
+        "false_warnings": 387,
+        "false_warnings_per_outing": 0.413903743315508,
+        "clean_outing_false_alarm_rate": 0.3235294117647059,
+        "lead_time_mean_pitches": 7.0,
+        "lead_time_median_pitches": 6.0,
+        "lead_time_mean_pas": 2.26775956284153,
+        "lead_time_median_pas": 2.0,
+        "headline_denominators": {
+          "episode_recall": 2215,
+          "warning_precision": 570,
+          "false_warnings_per_outing": 935,
+          "clean_outing_false_alarm_rate": 34,
+          "pitch_level_scoring_coverage": 58755,
+          "outing_level_scoring_coverage": 935
+        }
+      },
+      "persisted_warning_start_parity": true,
+      "all_eligible_pitches": {
+        "rows": 45009,
+        "classifiable_rows": 14556,
+        "positive": 6187,
+        "negative": 8369,
+        "positive_sign_share": 0.4250480901346524,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 30453,
+          "negative": 8369,
+          "positive": 6187
+        }
+      },
+      "clean_false_warning_starts": {
+        "rows": 13,
+        "classifiable_rows": 3,
+        "positive": 2,
+        "negative": 1,
+        "positive_sign_share": 0.6666666666666666,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 10,
+          "positive": 2,
+          "negative": 1
+        }
+      },
+      "matched_baseline_positive_share": 0.47222222222222215,
+      "paired_pitcher_bootstrap_excess": {
+        "estimate": 0.19444444444444445,
+        "ci_lower_95": -0.25,
+        "ci_upper_95": 0.5,
+        "pitchers": 3,
+        "warnings": 3,
+        "valid_replicates": 1000
+      },
+      "clean_warning_run_pitches_within_horizon": {
+        "rows": 128,
+        "classifiable_rows": 49,
+        "positive": 27,
+        "negative": 22,
+        "positive_sign_share": 0.5510204081632653,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 79,
+          "positive": 27,
+          "negative": 22
+        }
+      },
+      "warning_categories": {
+        "false_warning_episode_outing": 374,
+        "censored": 237,
+        "matched": 183,
+        "false_warning_clean_outing": 13
+      },
+      "other_unmatched_warning_starts": {
+        "rows": 374,
+        "classifiable_rows": 121,
+        "positive": 42,
+        "negative": 79,
+        "positive_sign_share": 0.34710743801652894,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 253,
+          "negative": 79,
+          "positive": 42
+        }
+      }
+    },
+    "validation": {
+      "production_metrics": {
+        "evaluated_outings_count": 956,
+        "evaluated_pitches_count": 59185,
+        "total_qualified_outings": 956,
+        "outings_with_available_score": 956,
+        "outings_without_available_score": 0,
+        "evaluation_opportunity_pitches": 60518,
+        "score_available_evaluation_pitches": 59185,
+        "pitch_level_scoring_coverage": 0.9779734954889454,
+        "outing_level_scoring_coverage": 1.0,
+        "total_collapse_episodes": 2152,
+        "evaluated_episodes_count": 2152,
+        "collapse_episodes_detected": 220,
+        "episode_recall": 0.10223048327137546,
+        "warning_precision": 0.32592592592592595,
+        "master_warning_count": 949,
+        "censored_warnings": 274,
+        "total_warnings": 675,
+        "false_warnings": 455,
+        "false_warnings_per_outing": 0.47594142259414224,
+        "clean_outing_false_alarm_rate": 0.48936170212765956,
+        "lead_time_mean_pitches": 7.4409090909090905,
+        "lead_time_median_pitches": 7.0,
+        "lead_time_mean_pas": 2.3454545454545452,
+        "lead_time_median_pas": 2.0,
+        "headline_denominators": {
+          "episode_recall": 2152,
+          "warning_precision": 675,
+          "false_warnings_per_outing": 956,
+          "clean_outing_false_alarm_rate": 47,
+          "pitch_level_scoring_coverage": 60518,
+          "outing_level_scoring_coverage": 956
+        }
+      },
+      "persisted_warning_start_parity": true,
+      "all_eligible_pitches": {
+        "rows": 59185,
+        "classifiable_rows": 18194,
+        "positive": 8258,
+        "negative": 9936,
+        "positive_sign_share": 0.45388589644937893,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 40991,
+          "negative": 9936,
+          "positive": 8258
+        }
+      },
+      "clean_false_warning_starts": {
+        "rows": 26,
+        "classifiable_rows": 10,
+        "positive": 6,
+        "negative": 4,
+        "positive_sign_share": 0.6,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 16,
+          "positive": 6,
+          "negative": 4
+        }
+      },
+      "matched_baseline_positive_share": 0.6091666666666666,
+      "paired_pitcher_bootstrap_excess": {
+        "estimate": -0.009166666666666667,
+        "ci_lower_95": -0.07291666666666666,
+        "ci_upper_95": 0.06666666666666665,
+        "pitchers": 8,
+        "warnings": 10,
+        "valid_replicates": 1000
+      },
+      "clean_warning_run_pitches_within_horizon": {
+        "rows": 198,
+        "classifiable_rows": 72,
+        "positive": 31,
+        "negative": 41,
+        "positive_sign_share": 0.4305555555555556,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 126,
+          "negative": 41,
+          "positive": 31
+        }
+      },
+      "warning_categories": {
+        "false_warning_episode_outing": 429,
+        "censored": 274,
+        "matched": 220,
+        "false_warning_clean_outing": 26
+      },
+      "other_unmatched_warning_starts": {
+        "rows": 429,
+        "classifiable_rows": 150,
+        "positive": 55,
+        "negative": 95,
+        "positive_sign_share": 0.36666666666666664,
+        "direction_status_counts": {
+          "unclassified_dominant_feature": 279,
+          "negative": 95,
+          "positive": 55
+        }
+      }
+    }
+  },
+  "gate_checks": {
+    "positive_share_above_half": true,
+    "excess_above_matched_background": false,
+    "enough_warning_starts": false,
+    "enough_pitchers": false,
+    "bootstrap_excess_above_zero": false
+  },
+  "proceed_to_directional_production": false,
+  "interpretation": "Feature signs are hypotheses. Gates address positive-sign overrepresentation among classifiable clean-warning starts, not fatigue or pitch quality."
+}

@@ -1,15 +1,42 @@
 """CUSUM change-point detection with strict score-availability isolation."""
 from typing import Tuple
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
+
+
+def resolve_reference_std(reference_std, pitcher: int) -> float:
+    """Resolve an explicit pitcher mapping; valid scalar behavior is unchanged.
+
+    A missing mapping entry raises rather than silently borrowing another
+    pitcher's scale. Callers supply explicit global fallbacks where justified.
+    """
+    if isinstance(reference_std, pd.Series):
+        if not reference_std.index.is_unique:
+            raise ValueError("Pitcher reference scales require a unique index")
+        if pitcher not in reference_std.index:
+            raise ValueError(f"No reference standard deviation for pitcher {pitcher}")
+        value = float(reference_std.loc[pitcher])
+    elif isinstance(reference_std, Mapping):
+        if pitcher not in reference_std:
+            raise ValueError(f"No reference standard deviation for pitcher {pitcher}")
+        value = float(reference_std[pitcher])
+    else:
+        value = float(reference_std)
+        if not np.isfinite(value):
+            raise ValueError("Reference standard deviation must be finite")
+        return max(value, 1e-6)  # Preserve the legacy scalar clamp.
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError("Pitcher reference standard deviations must be positive and finite")
+    return max(value, 1e-6)
 
 
 class CUSUMDetector:
     """Apply a one-sided upper CUSUM only to pitches eligible for scoring."""
 
     def __init__(self, slack_k: float = 0.5, threshold_h: float = 4.0,
-                 reference_mean: float = 1.0, reference_std: float = 0.5,
+                 reference_mean: float = 1.0, reference_std: float | Mapping | pd.Series = 0.5,
                  calibration_pitches: int = 20):
         self.slack_k = slack_k
         self.threshold_h = threshold_h
@@ -38,7 +65,7 @@ class CUSUMDetector:
                 alert_flags.append(False)
                 continue
 
-            z_score = (score - self.reference_mean) / max(self.reference_std, 1e-6)
+            z_score = (score - self.reference_mean) / resolve_reference_std(self.reference_std, int(row["pitcher"]))
             statistic = max(0.0, statistic + z_score - self.slack_k)
             cusum_vals.append(round(statistic, 3))
             is_alert = statistic >= self.threshold_h

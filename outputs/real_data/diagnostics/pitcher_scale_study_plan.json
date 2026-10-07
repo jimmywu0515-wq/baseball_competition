@@ -1,0 +1,42 @@
+{
+  "created_at_utc": "2026-10-07T14:20:30.363426+00:00",
+  "run_id": "7f6d93243a7e47d3a78948198dce6f30",
+  "protocol_sha256": "bb4dcd5a4c431b74b20b93b9ff6ea5e6af09e5ea1ebcb52b60595efbdde9d59a",
+  "test_rows_loaded": false,
+  "gate_report_sha256": "7168ef5c2e52e2229785b66229d17fba7572a948c860ae2e288cc1519e76b437",
+  "train": "2023 only",
+  "selection": "January-June 2024",
+  "assessment": "July-December 2024",
+  "prior_pitches": "Median qualifying training pitch count; fixed sensitivity multipliers 0.5, 1, 2",
+  "reference_mean": 1.0,
+  "reference_std": 0.5,
+  "primary_candidate": "proposed (prior multiplier 1)",
+  "selection_budget": 0.5,
+  "threshold_policy": "Production 31-quantile selector plus no-alert candidate; every threshold saved before assessment",
+  "availability_policy": "All models use the identical production mechanics availability; all qualified outings and episodes retained",
+  "application_policy": "Frozen train parameters applied only to 2024, never retrospectively to earlier train outings",
+  "fallback_policy": "Explicit scale 1 for pitchers without sufficient scored training outings",
+  "bootstrap": {
+    "samples": 1000,
+    "seed": 20261007,
+    "units": [
+      "outing",
+      "pitcher"
+    ],
+    "thresholds_reselected": false
+  },
+  "subgroups": "Low/high dispersion uses training scale median among qualifying pitchers; fallback pitchers are separate",
+  "exposure_disclosure": "Both 2024 periods have previously been inspected; this is exploratory development evidence",
+  "prior_2025_exposure_disclosure": "Exploratory 2025 metrics were generated in this workspace before this revised protocol. The current result is therefore a locked retrospective holdout evaluation, not a pristine first look.",
+  "source_sha256": {
+    "scripts/diagnostics/run_pitcher_scale_study.py": "8f67608eca8753cb99b405015912c9bb8c7100c4f3be673b7480d70302b4f6aa",
+    "src/baseline_builder/dispersion_shrinkage.py": "72180a9d96dc297171a918b96a306b51a6478af5a1361629750debfcdedaef3d",
+    "src/changepoint_detector/cusum_detector.py": "2114749f9b7f764f815df7c754cfc17c1c43cc1a8f45eb83828f679ac2b343de",
+    "src/evaluation/ablation_runner.py": "67c05f6dc406b3d41f7fa5f10c0aef5e141e53d7119e17639d7ffca23d400a75",
+    "src/evaluation/protocol.py": "17792e7eabb231876b4531711915c201bf4ed13f8f7c0605d1d0f7f54d2189a9",
+    "src/evaluation/bootstrap.py": "90d13d80f8077e132ecebc43165b38147febfbe337ec85047574b19fbb3fe2e6",
+    "src/evaluation/mechanics_value.py": "ebad01a72d1aa78e14a81d779be0812541b4b69ceb9d2f1e21c8558dba594ef2",
+    "scripts/diagnostics/directional_scale_diagnostics.py": "ac4fff11ec72c66c60b5a8ee1ef3f3b68b03b75d8eb96937e7b2f392f680d4dd",
+    "scripts/diagnostics/check_cusum_pitch_count_correlation.py": "f0f9309d4e9b13dc6afdaeeea07e233a61d549055a7685e5c15df9cd9395cc60"
+  }
+}

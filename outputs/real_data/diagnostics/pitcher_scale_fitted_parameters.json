@@ -1,0 +1,53 @@
+{
+  "scale_half": {
+    "score_column": "mahalanobis_calibrated",
+    "training_start": "2023-03-30",
+    "training_end": "2023-12-31",
+    "global_mean": 3.2375457399489194,
+    "global_std": 2.161770341702678,
+    "prior_pitches": 431.5,
+    "qualifying_pitchers": 38,
+    "training_pitches": 34847,
+    "strict_clean": false,
+    "unseen_or_insufficient_training_fallback_scale": 1.0,
+    "application_policy": "Frozen parameters only after the training-end cutoff; no retrospectively fitted train scores",
+    "fallback_pitchers": [
+      650633,
+      679525
+    ]
+  },
+  "proposed": {
+    "score_column": "mahalanobis_calibrated",
+    "training_start": "2023-03-30",
+    "training_end": "2023-12-31",
+    "global_mean": 3.2375457399489194,
+    "global_std": 2.161770341702678,
+    "prior_pitches": 863.0,
+    "qualifying_pitchers": 38,
+    "training_pitches": 34847,
+    "strict_clean": false,
+    "unseen_or_insufficient_training_fallback_scale": 1.0,
+    "application_policy": "Frozen parameters only after the training-end cutoff; no retrospectively fitted train scores",
+    "fallback_pitchers": [
+      650633,
+      679525
+    ]
+  },
+  "scale_double": {
+    "score_column": "mahalanobis_calibrated",
+    "training_start": "2023-03-30",
+    "training_end": "2023-12-31",
+    "global_mean": 3.2375457399489194,
+    "global_std": 2.161770341702678,
+    "prior_pitches": 1726.0,
+    "qualifying_pitchers": 38,
+    "training_pitches": 34847,
+    "strict_clean": false,
+    "unseen_or_insufficient_training_fallback_scale": 1.0,
+    "application_policy": "Frozen parameters only after the training-end cutoff; no retrospectively fitted train scores",
+    "fallback_pitchers": [
+      650633,
+      679525
+    ]
+  }
+}
